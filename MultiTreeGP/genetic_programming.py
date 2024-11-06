@@ -127,7 +127,7 @@ class GeneticProgramming:
         self.gradient_steps = gradient_steps
         self.optimiser = optimiser
 
-        self.map_b_to_d = self.create_map_b_to_d(self.max_init_depth)
+        self.map_b_to_d = self.create_map_b_to_d(max(self.max_init_depth, 3))
 
         #Initialize library of nodes
         string_to_node = {} #Maps string to node
@@ -147,7 +147,7 @@ class GeneticProgramming:
             if len(operator_tuple)==4:
                 probability = operator_tuple[3]
             else:
-                probability = 1.0
+                probability = 0.1
 
             if string not in string_to_node:
                 string_to_node[string] = index
@@ -415,7 +415,7 @@ class GeneticProgramming:
         fitness = self.jit_eval(flat_populations, data) #Evaluate the candidates
 
         #Optimise coefficients of the best candidates given conditions
-        if (self.coefficient_optimisation & (self.current_generation>10) & ((self.current_generation+1)%5==0)):
+        if (self.coefficient_optimisation & (self.current_generation>100) & ((self.current_generation+1)%5==0)):
             best_candidates_idx = jnp.argsort(fitness)[:50]
             optimised_fitness, optimised_population = self.jit_optimise(flat_populations[best_candidates_idx], data)
             flat_populations = flat_populations.at[best_candidates_idx].set(optimised_population)

@@ -27,7 +27,7 @@ def sample_node(i: int,
     coefficient_key, leaf_key, variable_key, node_key, operator_key = jr.split(key, 5)
     _i = map_b_to_d[i].astype(int) #Get depth first index
 
-    depth = (jnp.log(i+1)/jnp.log(2)).astype(int) #Compute depth of node
+    depth = (jnp.log(i + 1 + 1e-10)/jnp.log(2)).astype(int) #Compute depth of node
     coefficient = jr.normal(coefficient_key)*coefficient_sd
     leaf = jax.lax.select(jr.uniform(leaf_key)<0.5, 1, jr.choice(variable_key, variable_indices, shape=(), p=variable_array)) #Sample coefficient or variable
 
@@ -139,7 +139,7 @@ def sample_trees(keys: Array,
     
     Returns: Candidate
     """
-    return jax.vmap(sample_tree, in_axes=[0, None, 0, None, None, None])(keys, max_init_depth, variable_array, max_init_depth, max_nodes, args)
+    return jax.vmap(sample_tree, in_axes=[0, None, 0, None, None, None])(keys, max_init_depth, variable_array, jnp.maximum(max_init_depth, 3), max_nodes, args)
 
 def sample_population(key: PRNGKey, 
                       population_size: int, 
