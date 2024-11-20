@@ -44,13 +44,15 @@ class GeneticProgramming:
         :param max_nodes: Maximum number of nodes in a tree
         :param device_type: Type of device on which the evaluation and evolution takes place
         :param tournament_size: Size of the tournament
-        :param size_parsinomy: Parsimony factor that increases the fitness of a candidate based on its size
+        :param size_parsimony: Parsimony factor that increases the fitness of a candidate based on its size
         :param coefficient_sd: Standard deviation to sample coefficients
         :param migration_period: Number of generations after which populations are migrated
         :param migration_percentage: Number of candidates to migrate
         :param elite_percentage: Percentage of elite candidates that procceed to the next population
         :param coefficient_optimisation: If the coefficients are optimised with gradients
         :param gradient_steps: For how many steps the coefficients are optimised
+        :param start_coefficient_optimisation: After which generation the optimisation of coefficients should start
+        :param optimise_coefficients_elite: The number of the best candidates of which the coefficients are optimised
         :param optimiser: Optimiser for coefficient optimisation
         :param selection_pressure_factors: The selection pressure for each subpopulation
         :param reproduction_probability_factors: The reproduction probability for each subpopulation
@@ -63,24 +65,26 @@ class GeneticProgramming:
                  fitness_function: Callable, 
                  operator_list: list,
                  variable_list: list,
-                 layer_sizes: Array,
+                 layer_sizes: Array = jnp.array([1]),
                  num_populations: int = 1,
-                 max_init_depth: int = 4, 
+                 max_init_depth: int = 4,
                  max_nodes: int = 30,
                  device_type: str = 'cpu',
                  tournament_size: int = 7, 
-                 size_parsinomy: float = 0.0, 
+                 size_parsimony: float = 0.0, 
                  coefficient_sd: float = 1.0,
                  migration_period: int = 10,
                  migration_percentage: float = 0.1,
                  elite_percentage: int = 0.1,
                  coefficient_optimisation: bool = False,
                  gradient_steps: int = 10,
+                 start_coefficient_optimisation: int = 50,
+                 optimise_coefficients_elite: int = 100,
                  optimiser = optax.adam(learning_rate=0.001, b1=0.9, b2=0.999),
                  selection_pressure_factors: Tuple[float] = (0.6, 0.9),
                  reproduction_probability_factors: Tuple[float] = (1.0, 0.5),
-                 crossover_probability_factors: Tuple[float] = (0.9, 0.4),
-                 mutation_probability_factors: Tuple[float] = (0.1, 0.5),
+                 crossover_probability_factors: Tuple[float] = (0.9, 0.3),
+                 mutation_probability_factors: Tuple[float] = (0.1, 0.6),
                  sample_probability_factors: Tuple[float] = (0.0, 0.1)) -> None:
         
         self.layer_sizes = layer_sizes
@@ -100,7 +104,7 @@ class GeneticProgramming:
         self.best_fitnesses = jnp.zeros(num_generations)
         self.best_solutions = jnp.zeros((num_generations, self.num_trees, self.max_nodes, 4))
 
-        self.size_parsinomy = size_parsinomy
+        self.size_parsimony = size_parsimony
         self.coefficient_sd = coefficient_sd
 
         assert migration_period>1, "The migration period should be larger than 1"
@@ -128,6 +132,9 @@ class GeneticProgramming:
         self.optimiser = optimiser
 
         self.map_b_to_d = self.create_map_b_to_d(max(self.max_init_depth, 3))
+
+        self.optimise_coefficients_elite = optimise_coefficients_elite
+        self.start_coefficient_optimisation = start_coefficient_optimisation
 
         #Initialize library of nodes
         string_to_node = {} #Maps string to node
@@ -170,7 +177,11 @@ class GeneticProgramming:
 
         for var_list in variable_list:
             assert len(var_list)>0, "An empty set of variables was given"
-            for var in var_list:
+            for var_or_tuple in var_list:
+                if isinstance(var_or_tuple, str):
+                    var = var_or_tuple
+                else:
+                    var = var_or_tuple[0]
                 if var not in string_to_node:
                     string_to_node[var] = index
                     node_to_string[index] = var
@@ -185,8 +196,14 @@ class GeneticProgramming:
         counter = 0
         for layer_i, var_list in enumerate(variable_list):
             p = jnp.zeros((data_index))
-            for var in var_list:
-                p = p.at[string_to_node[var] - var_start_index].set(1)
+            for var_or_tuple in var_list:
+                if isinstance(var_or_tuple, str):
+                    var = var_or_tuple
+                    var_p = 1.0
+                else:
+                    var = var_or_tuple[0]
+                    var_p = var_or_tuple[1]
+                p = p.at[string_to_node[var] - var_start_index].set(var_p)
 
             for _ in range(layer_sizes[layer_i]):
                 variable_array = variable_array.at[counter].set(p)
@@ -316,16 +333,25 @@ class GeneticProgramming:
         Returns: String representation of tree
         """
         if tree[-1,0]==1: #Coefficient
-            return "{:.2f}".format(tree[-1,3])
+            return str(tree[-1,3])
         elif tree[-1,1]<0: #Variable
             return self.node_to_string[tree[-1,0].astype(int).item()]
         elif tree[-1,2]<0: #Operator with one operand
             substring = self.tree_to_string(tree[:tree[-1,1].astype(int)+1])
-            return f"{self.node_to_string[tree[-1,0].astype(int).item()]}({substring})"
+            operator_string = self.node_to_string[tree[-1,0].astype(int).item()]
+
+            if operator_string[0].isalpha() or operator_string[0].isdigit():
+                return f"{operator_string}({substring})"
+            else:
+                return f"({substring}){operator_string}"
         else: #Operator with two operands
             substring1 = self.tree_to_string(tree[:tree[-1,1].astype(int)+1])
             substring2 = self.tree_to_string(tree[:tree[-1,2].astype(int)+1])
-            return f"({substring1}){self.node_to_string[tree[-1,0].astype(int).item()]}({substring2})"
+            operator_string = self.node_to_string[tree[-1,0].astype(int).item()]
+            if operator_string in ["+", "-", "*", "/", "**"]:
+                return f"({substring1}){self.node_to_string[tree[-1,0].astype(int).item()]}({substring2})"
+            else:
+                return f"{operator_string}({substring1}, {substring2})"
         
     def to_string(self, candidate: Array) -> str:
         """
@@ -341,7 +367,15 @@ class GeneticProgramming:
         for tree in candidate:
             if tree_index==0: #Begin layer of trees
                 string_output += "["
-            string_output += str(sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(tree))) #Map tree to string
+            simplified_expression = sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(tree))
+
+            rounded_expression = simplified_expression
+
+            for a in sympy.preorder_traversal(simplified_expression):
+                if isinstance(a, sympy.Float):
+                    rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
+
+            string_output += str(rounded_expression) #Map tree to string
             if tree_index < (self.layer_sizes[layer_index] - 1): #Continue layer of trees
                 string_output += ", "
                 tree_index += 1
@@ -410,18 +444,18 @@ class GeneticProgramming:
         """
 
         flat_populations = populations.reshape(self.num_populations*self.population_size, *populations.shape[2:]) #Flatten the populations so they can be distributed over the devices
-        flat_populations = jax.device_put(flat_populations, NamedSharding(self.mesh, P('i')))
+        # flat_populations = jax.device_put(flat_populations, NamedSharding(self.mesh, P('i')))
         
         fitness = self.jit_eval(flat_populations, data) #Evaluate the candidates
 
         #Optimise coefficients of the best candidates given conditions
-        if (self.coefficient_optimisation & (self.current_generation>100) & ((self.current_generation+1)%5==0)):
-            best_candidates_idx = jnp.argsort(fitness)[:50]
+        if (self.coefficient_optimisation & (self.current_generation>=self.start_coefficient_optimisation)):
+            best_candidates_idx = jnp.argsort(fitness)[:self.optimise_coefficients_elite]
             optimised_fitness, optimised_population = self.jit_optimise(flat_populations[best_candidates_idx], data)
             flat_populations = flat_populations.at[best_candidates_idx].set(optimised_population)
             fitness = fitness.at[best_candidates_idx].set(optimised_fitness)
 
-        fitness = fitness + jax.vmap(lambda array: self.size_parsinomy * jnp.sum(array[:,:,0]!=0))(flat_populations) #Increase fitness based on the size of the candidate
+        fitness = fitness + jax.vmap(lambda array: self.size_parsimony * jnp.sum(array[:,:,0]!=0))(flat_populations) #Increase fitness based on the size of the candidate
 
         best_solution = flat_populations[jnp.argmin(fitness)]
         best_fitness = jnp.min(fitness)
@@ -430,7 +464,10 @@ class GeneticProgramming:
         self.best_solutions = self.best_solutions.at[self.current_generation].set(best_solution)
         self.best_fitnesses = self.best_fitnesses.at[self.current_generation].set(best_fitness)
 
-        return fitness.reshape((self.num_populations, self.population_size)), flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))      
+        fitness = fitness.reshape((self.num_populations, self.population_size))
+        populations = flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))  
+
+        return fitness, populations
             
     def epoch(self, carry: Tuple[Array, Array, Tuple], x: int) -> Tuple[Tuple[Array, Array, Tuple], Tuple[Array, Array]]:
         """
