@@ -12,6 +12,10 @@ Kozax allows the user to:
 # How to use
 Below is a short demo showing how you can use Kozax. First we generate data:
 ```
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+
 key = jr.PRNGKey(0)
 key, data_key, init_key = jr.split(key, 3)
 x = jr.uniform(data_key, shape=(30,), minval=-5, maxval = 5)
