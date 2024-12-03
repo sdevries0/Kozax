@@ -18,10 +18,14 @@ class Evaluator:
         stepsize_controller: Controller for the stepsize during integration
         max_steps: The maximum number of steps that can be used in integration
     """
-    def __init__(self, solver: diffrax.AbstractSolver = diffrax.Euler(), dt0: float = 0.01, max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
+    def __init__(self, solver: diffrax.AbstractSolver = diffrax.Euler(), dt0: float = 0.01, max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize(), optimize_dimensions: Array = None) -> None:
         self.max_fitness = 1e5
         self.dt0 = dt0
-        self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys-true_ys), axis=-1)) #Mean Squared Error
+        if optimize_dimensions is None:
+            # self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Squared Error
+            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys-true_ys), axis=-1)) #Mean Squared Error
+        else:
+            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys[:,optimize_dimensions]-true_ys[:,optimize_dimensions]), axis=-1))
         self.system = diffrax.ODETerm(self._drift)
         self.solver = solver
         self.stepsize_controller = stepsize_controller
@@ -68,10 +72,15 @@ class Evaluator:
         """
         
         saveat = diffrax.SaveAt(ts=ts)
-        root_finder = optx.Newton(1e-5, 1e-5, optx.rms_norm)
+        # root_finder = optx.Newton(1e-5, 1e-5, optx.rms_norm)
         event_nan = diffrax.Event(self.cond_fn_nan)#, root_finder=root_finder)
         # brownian_motion = diffrax.UnsafeBrownianPath(shape=(x0.shape[0],), key=process_noise_key, levy_area=diffrax.SpaceTimeLevyArea)
         # system = diffrax.MultiTerm(self.system, diffrax.ControlTerm(self._diffusion, brownian_motion))
+
+        # x1 = diffrax.LinearInterpolation(ts=ts, ys=ys[:,1])
+        # x2 = diffrax.LinearInterpolation(ts=ts, ys=ys[:,2])
+        # x3 = diffrax.LinearInterpolation(ts=ts, ys=ys[:,3])
+        # f_x = lambda t: jnp.array([x1.evaluate(t), x2.evaluate(t), x3.evaluate(t)])
 
         sol = diffrax.diffeqsolve(
             self.system, self.solver, ts[0], ts[-1], self.dt0, x0, args=(candidate, tree_evaluator), saveat=saveat, max_steps=self.max_steps, stepsize_controller=self.stepsize_controller, 
@@ -84,6 +93,9 @@ class Evaluator:
     
     def _drift(self, t, x, args):
         candidate, tree_evaluator = args
+
+        # x = jnp.insert(f_x(t), 0, x[0])
+
         dx = tree_evaluator(candidate, x)
         return dx
     
@@ -91,4 +103,4 @@ class Evaluator:
         return jnp.zeros_like(x)
     
     def cond_fn_nan(self, t, y, args, **kwargs):
-        return jnp.where(jnp.any(jnp.isinf(y) +jnp.isnan(y)), -1.0, 1.0)
+        return jnp.where(jnp.any(jnp.isinf(y) + jnp.isnan(y)), True, False)

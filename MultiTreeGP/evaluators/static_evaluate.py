@@ -8,7 +8,7 @@ from typing import Tuple, Callable
 import copy
 
 class Evaluator:
-    def __init__(self, env, dt0: float, solver=diffrax.Euler(), max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
+    def __init__(self, env, dt0: float, solver=diffrax.Euler(), max_steps: int = 16**4, lag_size: int = 1, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
         """Evaluator for static symbolic policies in control tasks
 
         Attributes:
@@ -24,10 +24,11 @@ class Evaluator:
             stepsize_controller: Controller for the stepsize during integration
         """
         self.env = env
-        self.max_fitness = 1e4
+        self.max_fitness = 1e6
         self.obs_size = env.n_obs
         self.control_size = env.n_control
         self.latent_size = env.n_var*env.n_dim
+        self.lag_size = lag_size
         self.dt0 = dt0
         self.solver = solver
         self.max_steps = max_steps
@@ -84,8 +85,10 @@ class Evaluator:
         solver = self.solver
         dt0 = self.dt0
         saveat = diffrax.SaveAt(ts=ts)
+        # solve_ts = jnp.arange(0,50,dt0)
 
-        system = diffrax.ODETerm(self._drift)
+        brownian_motion = diffrax.UnsafeBrownianPath(shape=(self.latent_size,), key=process_noise_key, levy_area=diffrax.SpaceTimeLevyArea) #define process noise
+        system = diffrax.MultiTerm(diffrax.ODETerm(self._drift), diffrax.ControlTerm(self._diffusion, brownian_motion))
         
         sol = diffrax.diffeqsolve(
             system, solver, ts[0], ts[-1], dt0, x0, saveat=saveat, adjoint=diffrax.DirectAdjoint(), max_steps=self.max_steps, event=diffrax.Event(self.env.cond_fn_nan), 
@@ -93,8 +96,28 @@ class Evaluator:
         )
 
         xs = sol.ys
+
         _, ys = jax.lax.scan(env.f_obs, obs_noise_key, (ts, xs))
         us = jax.vmap(lambda y, tar: tree_evaluator(policy, jnp.concatenate([y, tar])), in_axes=[0,None])(ys, target)
+
+        # def solve(carry, t):
+        #     x, lagged_obs = carry
+
+        #     _, y = env.f_obs(obs_noise_key, (t, x))
+        #     lagged_obs = jnp.concatenate([lagged_obs[1:self.lag_size], y[0,None]])#, lagged_obs[self.lag_size+1:2*self.lag_size], y[1,None]])
+        #     u = tree_evaluator(policy, jnp.concatenate([lagged_obs, target]))
+        #     dx = env.drift(t, x, u)
+        #     new_x = x + self.dt0 * dx
+
+        #     carry = new_x, lagged_obs
+        #     return carry, (new_x, y, u)
+    
+        # init_carry = (x0, jnp.zeros(self.obs_size*self.lag_size))
+        # _, (xs, ys, us) = jax.lax.scan(solve, init_carry, solve_ts)
+        
+        # xs = jax.vmap(self.interpolate, in_axes=[None, 1, None], out_axes=1)(solve_ts, xs, ts)
+        # ys = jax.vmap(self.interpolate, in_axes=[None, 1, None], out_axes=1)(solve_ts, ys, ts)
+        # us = jax.vmap(self.interpolate, in_axes=[None, 1, None], out_axes=1)(solve_ts, us, ts)
 
         fitness = env.fitness_function(xs, us, target, ts)
 
@@ -114,3 +137,6 @@ class Evaluator:
         env, policy, obs_noise_key, target, tree_evaluator = args
 
         return env.diffusion(t, x, jnp.array([0]))
+    
+    def interpolate(self, solve_ts, ys, eval_ts):
+        return diffrax.LinearInterpolation(ts=solve_ts, ys=ys).evaluate(eval_ts)

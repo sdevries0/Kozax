@@ -88,8 +88,9 @@ class Evaluator:
         saveat = diffrax.SaveAt(ts=ts)
         _x0 = jnp.concatenate([x0, jnp.zeros(self.state_size)])
 
-        system = diffrax.ODETerm(self._drift)
-
+        brownian_motion = diffrax.UnsafeBrownianPath(shape=(self.latent_size,), key=process_noise_key, levy_area=diffrax.SpaceTimeLevyArea) #define process noise
+        system = diffrax.MultiTerm(diffrax.ODETerm(self._drift), diffrax.ControlTerm(self._diffusion, brownian_motion))
+        
         sol = diffrax.diffeqsolve(
             system, solver, ts[0], ts[-1], dt0, _x0, saveat=saveat, adjoint=diffrax.DirectAdjoint(), max_steps=self.max_steps, event=diffrax.Event(self.env.cond_fn_nan), 
             args=(env, state_equation, readout, obs_noise_key, target, tree_evaluator), stepsize_controller=self.stepsize_controller, throw=False

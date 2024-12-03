@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from typing import Tuple
+from typing import Tuple, Callable
 from jax import Array
 from jax.random import PRNGKey
 
@@ -121,7 +121,8 @@ def crossover(tree1: Array,
               tree2: Array, 
               keys: Array,
               max_nodes: int, 
-              operator_indices: Array) -> Tuple[Array, Array]:
+              operator_indices: Array,
+              simplify_function: Callable) -> Tuple[Array, Array]:
     """
     Applies crossover to a pair of trees to produce two new trees
     
@@ -189,14 +190,15 @@ def crossover(tree1: Array,
     child1 = jnp.where((tree_indices >= node_idx1 + 1 - subtree_size2) & (tree_indices < node_idx1 + 1), rolled_subtree2, child1)
     child2 = jnp.where((tree_indices >= node_idx2 + 1 - subtree_size1) & (tree_indices < node_idx2 + 1), rolled_subtree1, child2)
     
-    return child1, child2
+    return simplify_function(child1), simplify_function(child2)
 
 def crossover_trees(parent1: Array, 
                     parent2: Array, 
                     keys: Array, 
                     reproduction_probability: float, 
                     max_nodes: int, 
-                    operator_indices: Array) -> Tuple[Array, Array]:
+                    operator_indices: Array,
+                    simplify_function: Callable) -> Tuple[Array, Array]:
     """
     Applies crossover to the trees in a pair of candidates
 
@@ -212,7 +214,7 @@ def crossover_trees(parent1: Array,
 
     #Determine to which trees in the candidates crossover is applied
     _, cx_indices, _ = jax.lax.while_loop(lambda carry: jnp.sum(carry[1])==0, sample_indices, (keys[0, 0], jnp.zeros(parent1.shape[0]), reproduction_probability))
-    offspring1, offspring2 = jax.vmap(crossover, in_axes=[0,0,0,None,None])(parent1, parent2, keys, max_nodes, operator_indices)
+    offspring1, offspring2 = jax.vmap(crossover, in_axes=[0,0,0,None,None,None])(parent1, parent2, keys, max_nodes, operator_indices, simplify_function)
     child1 = jnp.where(cx_indices[:,None,None] * jnp.ones_like(parent1), offspring1, parent1)
     child2 = jnp.where(cx_indices[:,None,None] * jnp.ones_like(parent2), offspring2, parent2)
     return child1, child2

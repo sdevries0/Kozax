@@ -11,6 +11,7 @@ def evolve_trees(parent1: Array,
                  type: int, 
                  reproduction_probability: float, 
                  reproduction_functions: list[Callable]) -> Array:
+    
     """
     Applies reproduction function to pair of candidates
     
@@ -166,11 +167,11 @@ def evolve_populations(jit_evolve_population: Callable,
                                                                                                    population_indices), 
                                     populations)
     
-    new_population = jax.vmap(jit_evolve_population, in_axes=[0, 0, 0, 0, 0, 0, None])(populations, 
-                                                                                       fitness, 
-                                                                                       jr.split(key, num_populations), 
-                                                                                       reproduction_type_probabilities, 
-                                                                                       reproduction_probabilities, 
-                                                                                       tournament_probabilities, 
-                                                                                       population_indices)
+    new_population = jit_evolve_population(populations, 
+                                        fitness, 
+                                        jr.split(key, num_populations), 
+                                        reproduction_type_probabilities, 
+                                        reproduction_probabilities, 
+                                        tournament_probabilities, 
+                                        population_indices)
     return new_population

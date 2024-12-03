@@ -75,12 +75,14 @@ class GeneticProgramming:
                  coefficient_sd: float = 1.0,
                  migration_period: int = 10,
                  migration_percentage: float = 0.1,
-                 elite_percentage: int = 0.1,
+                 elite_size: int = 10,
                  coefficient_optimisation: bool = False,
                  gradient_steps: int = 10,
                  start_coefficient_optimisation: int = 50,
                  optimise_coefficients_elite: int = 100,
-                 optimiser = optax.adam(learning_rate=0.001, b1=0.9, b2=0.999),
+                 optimiser_class = optax.adam,
+                 init_learning_rate: float = 0.05,
+                 learning_rate_decay: float = 0.95,
                  selection_pressure_factors: Tuple[float] = (0.6, 0.9),
                  reproduction_probability_factors: Tuple[float] = (1.0, 0.5),
                  crossover_probability_factors: Tuple[float] = (0.9, 0.3),
@@ -101,8 +103,9 @@ class GeneticProgramming:
 
         self.current_generation = 0
         assert num_generations>0, "The number of generations should be larger than 0"
-        self.best_fitnesses = jnp.zeros(num_generations)
-        self.best_solutions = jnp.zeros((num_generations, self.num_trees, self.max_nodes, 4))
+        self.num_generations = num_generations
+        self.best_fitnesses = jnp.zeros(self.num_generations)
+        self.best_solutions = jnp.zeros((self.num_generations, self.num_trees, self.max_nodes, 4))
 
         self.size_parsimony = size_parsimony
         self.coefficient_sd = coefficient_sd
@@ -122,14 +125,16 @@ class GeneticProgramming:
                                                            jnp.linspace(*sample_probability_factors, self.num_populations)]).T
         self.reproduction_probabilities = jnp.linspace(*reproduction_probability_factors, self.num_populations)
 
-        self.elite_size = int(elite_percentage*population_size)
+        self.elite_size = elite_size
         assert self.elite_size%2==0, "The elite size should be a multiple of two"
 
         self.coefficient_optimisation = coefficient_optimisation
         if coefficient_optimisation:
             assert gradient_steps>0, "The number of gradient steps should be larger than 0"
         self.gradient_steps = gradient_steps
-        self.optimiser = optimiser
+        self.optimiser_class = optimiser_class
+        self.learning_rate = init_learning_rate
+        self.learning_rate_decay = learning_rate_decay
 
         self.map_b_to_d = self.create_map_b_to_d(max(self.max_init_depth, 3))
 
@@ -214,6 +219,8 @@ class GeneticProgramming:
         self.node_to_string = node_to_string
         self.node_function_list = node_function_list
         self.variable_array = variable_array
+        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:,None], reps=(1,4))
+        self.empty_tree = jnp.tile(jnp.array([0.0,-1.0,-1.0,0.0]), (self.max_nodes, 1))
 
         print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices]}.")
 
@@ -224,18 +231,18 @@ class GeneticProgramming:
                             self.slots, 
                             self.coefficient_sd, 
                             self.map_b_to_d)
+                
+        self.sample_tree = partial(sample_tree,
+                                   max_nodes = self.max_nodes, 
+                                   max_init_depth = self.max_init_depth,
+                                   simplify_function = self.simplify_tree,
+                                   args = self.sample_args)
         
         self.sample_population = partial(sample_population, 
                                          num_trees = self.num_trees, 
                                          max_init_depth = self.max_init_depth, 
-                                         max_nodes = self.max_nodes, 
                                          variable_array = self.variable_array,
-                                         args = self.sample_args)
-        
-        self.sample_tree = partial(sample_tree, 
-                                   max_nodes = self.max_nodes, 
-                                   max_init_depth = self.max_init_depth, 
-                                   args = self.sample_args)
+                                         sample_function = self.sample_tree)
 
         self.mutate_args = (self.sample_tree, 
                             self.max_nodes, 
@@ -246,20 +253,25 @@ class GeneticProgramming:
                             self.slots, 
                             self.coefficient_sd)
         
-        self.mutate_trees = initialize_mutation_functions(self.mutate_args)
+        self.mutate_trees = initialize_mutation_functions(self.mutate_args, self.simplify_tree)
 
         self.partial_crossover = partial(crossover_trees, 
                                          operator_indices = self.operator_indices, 
-                                         max_nodes = self.max_nodes)
+                                         max_nodes = self.max_nodes,
+                                         simplify_function = self.simplify_tree)
 
         self.reproduction_functions = [self.partial_crossover, self.mutate_pair, self.sample_pair]
+        # self.reproduction_functions = [self.partial_crossover, self.partial_crossover, self.partial_crossover]
+        # self.reproduction_functions = [self.mutate_pair, self.mutate_pair, self.mutate_pair]
 
-        self.jit_evolve_population = jax.jit(partial(evolve_population, 
+
+        self.jit_evolve_population = jax.jit(jax.vmap(partial(evolve_population, 
                                                      reproduction_functions = self.reproduction_functions, 
                                                      elite_size = self.elite_size, 
                                                      tournament_size = self.tournament_size, 
                                                      num_trees = self.num_trees, 
-                                                     population_size=population_size))
+                                                     population_size=population_size),
+                                                    in_axes=[0, 0, 0, 0, 0, 0, None]))
 
         #Define partial fitness function for evaluation
         self.jit_body_fun = jax.jit(partial(self.body_fun, node_function_list = self.node_function_list))
@@ -268,9 +280,11 @@ class GeneticProgramming:
         #Define parallel evaluation functions
         self.vmap_trees = jax.vmap(self.partial_ff, in_axes=[0, 0, None])
         self.vmap_gradients = jax.vmap(jax.value_and_grad(self.partial_ff), in_axes=[0, 0, None])
+        self.gradients_f = jax.value_and_grad(self.partial_ff)
 
         devices = mesh_utils.create_device_mesh((len(jax.devices(device_type))))
         self.mesh = Mesh(devices, axis_names=('i'))
+        self.data_mesh = NamedSharding(self.mesh, P())
 
         #Define sharded functions for evaluation and optimisation
         @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_rep=False)
@@ -364,6 +378,18 @@ class GeneticProgramming:
         string_output = ""
         tree_index = 0
         layer_index = 0
+
+        if jnp.sum(self.layer_sizes) == 1:
+            simplified_expression = sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(candidate[0]))
+
+            rounded_expression = simplified_expression
+
+            # for a in sympy.preorder_traversal(simplified_expression):
+            #     if isinstance(a, sympy.Float):
+            #         rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
+
+            return rounded_expression
+
         for tree in candidate:
             if tree_index==0: #Begin layer of trees
                 string_output += "["
@@ -444,18 +470,37 @@ class GeneticProgramming:
         """
 
         flat_populations = populations.reshape(self.num_populations*self.population_size, *populations.shape[2:]) #Flatten the populations so they can be distributed over the devices
-        # flat_populations = jax.device_put(flat_populations, NamedSharding(self.mesh, P('i')))
+        # populations = jax.device_put(populations, NamedSharding(self.mesh, P('i')))
+        data = jax.device_put(data, self.data_mesh)
         
+        # fitness = self.jit_eval(populations, data) #Evaluate the candidates
         fitness = self.jit_eval(flat_populations, data) #Evaluate the candidates
 
         #Optimise coefficients of the best candidates given conditions
         if (self.coefficient_optimisation & (self.current_generation>=self.start_coefficient_optimisation)):
+            self.optimiser = self.optimiser_class(self.learning_rate)
             best_candidates_idx = jnp.argsort(fitness)[:self.optimise_coefficients_elite]
-            optimised_fitness, optimised_population = self.jit_optimise(flat_populations[best_candidates_idx], data)
+            # best_candidates_idx = jr.choice(jr.PRNGKey(self.current_generation), jnp.arange(0, flat_populations.shape[0]), shape=(self.optimise_coefficients_elite,), p=1/fitness)
+            best_candidates = flat_populations[best_candidates_idx]
+            # best_candidates = jax.vmap(lambda pop, idx: pop[idx])(populations, best_candidates_idx)
+            optimised_fitness, optimised_population = self.jit_optimise(best_candidates, data)
             flat_populations = flat_populations.at[best_candidates_idx].set(optimised_population)
             fitness = fitness.at[best_candidates_idx].set(optimised_fitness)
 
+            # populations = jax.vmap(lambda pop, idx, opt_pop: pop.at[idx].set(opt_pop))(populations, best_candidates_idx, optimised_population)
+            # fitness = jax.vmap(lambda f, idx, opt_f: f.at[idx].set(opt_f))(fitness, best_candidates_idx, optimised_fitness)
+
+        # if self.coefficient_optimisation:
+        #     fitness, flat_populations = self.jit_optimise(flat_populations, data)
+        # else:
+        #     fitness = self.jit_eval(flat_populations, data)
+
         fitness = fitness + jax.vmap(lambda array: self.size_parsimony * jnp.sum(array[:,:,0]!=0))(flat_populations) #Increase fitness based on the size of the candidate
+        # fitness = fitness + self.size_parsimony * jnp.sum(populations[:,:,0]!=0, axis=[2,3]) #Increase fitness based on the size of the candidate
+
+        # best_idx = jnp.argmin(fitness)
+        # best_solution = populations[best_idx//self.population_size, best_idx%self.population_size]
+        # best_fitness = jnp.min(fitness)
 
         best_solution = flat_populations[jnp.argmin(fitness)]
         best_fitness = jnp.min(fitness)
@@ -465,7 +510,8 @@ class GeneticProgramming:
         self.best_fitnesses = self.best_fitnesses.at[self.current_generation].set(best_fitness)
 
         fitness = fitness.reshape((self.num_populations, self.population_size))
-        populations = flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))  
+        populations = flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))
+        # jax.debug.visualize_array_sharding(populations)
 
         return fitness, populations
             
@@ -508,7 +554,10 @@ class GeneticProgramming:
         candidates = jax.vmap(lambda t, i: t[i], in_axes=[1,0])(new_candidates, jnp.argmin(loss, axis=0)) #Get best candidate during optimisation
 
         return fitness, candidates
-    
+
+    def increase_generation(self):
+        self.current_generation += 1
+
     def evolve(self, populations: Array, fitness: Array, key: PRNGKey) -> Array:
         """
         Evolves each population independently
@@ -530,7 +579,8 @@ class GeneticProgramming:
                                          self.reproduction_type_probabilities, 
                                          self.reproduction_probabilities, 
                                          self.tournament_probabilities)
-        self.current_generation += 1
+        self.increase_generation()
+        self.learning_rate = self.learning_rate * self.learning_rate_decay
         return populations
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
@@ -572,3 +622,72 @@ class GeneticProgramming:
             return self.best_fitnesses[generation], self.best_solutions[generation]
         else:
             return self.best_fitnesses, self.best_solutions
+        
+    def simplify_coefficients(self, i, carry):
+        tree, tree_indices, empty_tree = carry
+
+        last_node_idx = jnp.sum(tree[:,0]==0)
+        f_idx, a_idx, b_idx, coefficient = tree[i]
+
+        evaluated_subtree = tree.at[i].set(jnp.array([1.0, -1.0, -1.0, jax.lax.switch(f_idx.astype(int), self.node_function_list, tree[a_idx.astype(int), -1], tree[b_idx.astype(int), -1], jnp.zeros(1))]))
+        
+        one_branch_tree = jnp.where((tree_indices < i) & (tree_indices >= last_node_idx + 1), jnp.roll(tree, 1, axis=0), evaluated_subtree)
+        one_branch_tree = jnp.where(tree_indices < last_node_idx + 1, empty_tree, one_branch_tree)
+        one_branch_tree = one_branch_tree.at[:,1:3].set(jnp.where((one_branch_tree[:,1:3] < a_idx) & (one_branch_tree[:,1:3] > -1), one_branch_tree[:,1:3] + 1, one_branch_tree[:,1:3]))
+        
+        two_branch_tree = jnp.where((tree_indices < i) & (tree_indices >= last_node_idx + 2), jnp.roll(tree, 2, axis=0), evaluated_subtree)
+        two_branch_tree = jnp.where(tree_indices < last_node_idx + 2, empty_tree, two_branch_tree)
+        two_branch_tree = two_branch_tree.at[:,1:3].set(jnp.where((two_branch_tree[:,1:3] < b_idx) & (two_branch_tree[:,1:3] > -1), two_branch_tree[:,1:3] + 2, two_branch_tree[:,1:3]))
+        
+        new_tree = jax.lax.select((tree[a_idx.astype(int), 0] == 1) & (b_idx == -1), one_branch_tree, tree)
+        new_tree = jax.lax.select((tree[a_idx.astype(int), 0] == 1) & (tree[b_idx.astype(int), 0] == 1), two_branch_tree, new_tree)
+
+        new_tree = jax.lax.select(a_idx > -1, new_tree, tree)
+
+        return (new_tree, tree_indices, empty_tree)
+
+    def simplify_tree(self, tree):
+        # tree, _, _ = jax.lax.fori_loop(0, self.max_nodes, self.simplify_coefficients, (tree, self.tree_indices, self.empty_tree))
+
+        return tree
+    
+    def generation(self, carry, _):
+        populations, key, data = carry
+        populations = jax.device_put(populations, NamedSharding(self.mesh, P('i')))
+        
+        fitness = self.jit_eval(populations, data) #Evaluate the candidates
+
+        #Optimise coefficients of the best candidates given conditions
+        # if (self.coefficient_optimisation & (self.current_generation>=self.start_coefficient_optimisation)):
+        #     best_candidates_idx = jnp.argsort(fitness)[:,:self.optimise_coefficients_elite]
+        #     # best_candidates = flat_populations[best_candidates_idx]
+        #     best_candidates = jax.vmap(lambda pop, idx: pop[idx])(populations, best_candidates_idx)
+        #     optimised_fitness, optimised_population = self.jit_optimise(best_candidates, data)
+        #     # flat_populations = flat_populations.at[best_candidates_idx].set(optimised_population)
+        #     populations = jax.vmap(lambda pop, idx, opt_pop: pop.at[idx].set(opt_pop))(populations, best_candidates_idx, optimised_population)
+        #     fitness = jax.vmap(lambda f, idx, opt_f: f.at[idx].set(opt_f))(fitness, best_candidates_idx, optimised_fitness)
+
+        fitness = fitness + self.size_parsimony * jnp.sum(populations[:,:,0]!=0, axis=[2,3]) #Increase fitness based on the size of the candidate
+
+        best_idx = jnp.argmin(fitness)
+        best_solution = populations[best_idx//self.population_size, best_idx%self.population_size]
+        best_fitness = jnp.min(fitness)
+
+        key, sample_key = jr.split(key)
+        populations = self.evolve(populations, fitness, sample_key)
+
+        next_carry = (populations, key, data)
+
+        return next_carry, (best_fitness, best_solution)
+    
+    def fit(self, key, data):
+        init_key, scan_key = jr.split(key)
+        init_population = self.initialize_population(init_key)
+        data = jax.device_put(data, self.data_mesh)
+        init_carry = (init_population, scan_key, data)
+        scan_fn = jax.jit(self.generation)
+        carry, output = jax.lax.scan(scan_fn, init_carry, length = self.num_generations)
+
+        best_fitness, best_solutions = output
+
+        return best_fitness, best_solutions

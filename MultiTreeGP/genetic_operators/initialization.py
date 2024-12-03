@@ -4,7 +4,7 @@ import jax.random as jr
 from jax.random import PRNGKey
 from functools import partial
 from jax import Array
-from typing import Tuple
+from typing import Tuple, Callable
 
 def sample_node(i: int, 
                 carry: Tuple[PRNGKey, Array, int, int, int, Array, Tuple]):
@@ -102,6 +102,7 @@ def sample_tree(key: PRNGKey,
                 variable_array: Array, 
                 max_init_depth: int, 
                 max_nodes: int, 
+                simplify_function: Callable,
                 args: Tuple) -> Array:
     """
     Initializes a tree
@@ -121,33 +122,15 @@ def sample_tree(key: PRNGKey,
 
     #Prune empty rows in tree
     pruned_tree =  prune_tree(tree, tree_size, max_nodes)
-    return pruned_tree
-
-def sample_trees(keys: Array, 
-                 max_init_depth: int, 
-                 max_nodes: int, 
-                 variable_array: Array, 
-                 args: Tuple) -> Array:
-    """
-    Initializes a candidate consisting of multiple trees
-
-    :param keys
-    :param max_init_depth: Max depth in a tree at initialization
-    :param max_nodes: Max number of nodes in a tree
-    :param variable_array: The valid variables for each tree
-    :param args: Miscellaneous parameters required for initialization
-    
-    Returns: Candidate
-    """
-    return jax.vmap(sample_tree, in_axes=[0, None, 0, None, None, None])(keys, max_init_depth, variable_array, jnp.maximum(max_init_depth, 3), max_nodes, args)
+    simplified_tree = simplify_function(pruned_tree)
+    return simplified_tree
 
 def sample_population(key: PRNGKey, 
                       population_size: int, 
                       num_trees: int, 
                       max_init_depth: int, 
-                      max_nodes: int, 
-                      variable_array: Array, 
-                      args: Tuple) -> Array:
+                      variable_array: Array,
+                      sample_function: Callable) -> Array:
     """
     Initializes a population of candidates
 
@@ -161,5 +144,7 @@ def sample_population(key: PRNGKey,
     
     Returns: Population of candidates
     """
-    return jax.vmap(sample_trees, in_axes=[0, None, None, None, None])(jr.split(key, (population_size, num_trees)), max_init_depth, max_nodes, variable_array, args)
+    
+    sample_candidate = lambda keys: jax.vmap(sample_function, in_axes=[0, None, 0])(keys, max_init_depth, variable_array)
+    return jax.vmap(sample_candidate)(jr.split(key, (population_size, num_trees)))
     

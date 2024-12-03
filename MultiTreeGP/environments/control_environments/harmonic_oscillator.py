@@ -33,20 +33,8 @@ class HarmonicOscillator(EnvironmentBase):
         elif mode == "Different":
             omegas = jrandom.uniform(omega_key, shape=(batch_size,), minval=0.0, maxval=2.0)
             zetas = jrandom.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.5)
-        elif mode == "Switch":
-            switch_times = jrandom.randint(args_key, shape=(batch_size,), minval=int(ts.shape[0]/4), maxval=int(3*ts.shape[0]/4))
-            omegas = jnp.zeros((batch_size, ts.shape[0]))
-            zetas = jnp.zeros((batch_size, ts.shape[0]))
-            for i in range(batch_size):
-                _key11, _key12 = jrandom.split(jrandom.fold_in(omega_key, i))
-                omegas = omegas.at[i,:switch_times[i]].set(jrandom.uniform(_key11, shape=(), minval=0.5, maxval=1.5))
-                omegas = omegas.at[i,switch_times[i]:].set(jrandom.uniform(_key12, shape=(), minval=0.5, maxval=1.5))
 
-                _key21, _key22 = jrandom.split(jrandom.fold_in(zeta_key, i))
-                zetas = zetas.at[i,:switch_times[i]].set(jrandom.uniform(_key21, shape=(), minval=0., maxval=1.))
-                zetas = zetas.at[i,switch_times[i]:].set(jrandom.uniform(_key22, shape=(), minval=0., maxval=1.))
-
-        elif mode == "Decay":
+        elif mode == "Changing":
             decay_factors = jrandom.uniform(args_key, shape=(batch_size,2), minval=0.98, maxval=1.02)
             init_omegas = jrandom.uniform(omega_key, shape=(batch_size,), minval=0.5, maxval=1.5)
             init_zetas = jrandom.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.0)
