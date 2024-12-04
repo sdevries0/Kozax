@@ -20,7 +20,6 @@ key = jr.PRNGKey(0)
 key, data_key, init_key = jr.split(key, 3)
 x = jr.uniform(data_key, shape=(30,), minval=-5, maxval = 5)
 y = -0.1*x**3 + 0.3*x**2 + 1.5*x
-plt.scatter(x,y)
 ```
 
 Now we have to define a fitness function. This allows for much freedom, because you can use the computer program anyway you want to during evaluation. The fitness function should have a `__call__` method that receives a candidate, the data and a function that is necessary to evaluate the tree.
