@@ -33,6 +33,7 @@ class FitnessFunction:
 fitness_function = FitnessFunction()
 ```
 
+Now we will use genetic programming to recover the equation from the data. This requires defining the hyperparameters, initializing the population and the general loop of evaluating and evolving the population.
 ```
 from MultiTreeGP.genetic_programming import GeneticProgramming
 
