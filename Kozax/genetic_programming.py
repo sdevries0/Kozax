@@ -15,10 +15,10 @@ import sympy
 from typing import Tuple, Callable
 import time
 
-from MultiTreeGP.genetic_operators.crossover import crossover_trees
-from MultiTreeGP.genetic_operators.initialization import sample_population, sample_tree
-from MultiTreeGP.genetic_operators.mutation import initialize_mutation_functions
-from MultiTreeGP.genetic_operators.reproduction import evolve_populations, evolve_population
+from Kozax.genetic_operators.crossover import crossover_trees
+from Kozax.genetic_operators.initialization import sample_population, sample_tree
+from Kozax.genetic_operators.mutation import initialize_mutation_functions
+from Kozax.genetic_operators.reproduction import evolve_populations, evolve_population
 
 #Function containers
 def lambda_operator_arity1(f):

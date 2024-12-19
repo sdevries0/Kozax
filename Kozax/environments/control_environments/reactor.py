@@ -3,7 +3,7 @@ import jax
 import jax.random as jrandom
 import diffrax
 
-from MultiTreeGP.environments.control_environments.control_environment_base import EnvironmentBase
+from Kozax.environments.control_environments.control_environment_base import EnvironmentBase
 
 class StirredTankReactor(EnvironmentBase):
     def __init__(self, process_noise, obs_noise, n_obs = 3, n_targets = 1, max_control = jnp.array([300]), external_f=None):

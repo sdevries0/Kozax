@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
-from MultiTreeGP.environments.control_environments.control_environment_base import EnvironmentBase
+from Kozax.environments.control_environments.control_environment_base import EnvironmentBase
 
 class Acrobot(EnvironmentBase):
     def __init__(self, process_noise, obs_noise, n_obs=4):

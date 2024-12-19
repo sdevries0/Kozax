@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from MultiTreeGP.environments.SR_environments.time_series_environment_base import EnvironmentBase
+from Kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
 
 class LorenzAttractor(EnvironmentBase):
     def __init__(self, process_noise, obs_noise, n_obs=3):
