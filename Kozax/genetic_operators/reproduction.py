@@ -23,9 +23,10 @@ def evolve_trees(parent1: Array,
 
     Returns: Pair of reproduced candidates
     """
-    child1, child2 = jax.lax.switch(type, reproduction_functions, parent1, parent2, keys, reproduction_probability)
+    child0, child1 = jax.lax.switch(type, reproduction_functions, parent1, parent2, keys, reproduction_probability)
 
-    return child1, child2
+    # return child1, child2
+    return child0, child1
 
 def tournament_selection(population: Array, 
                          fitness: Array, 
@@ -45,7 +46,9 @@ def tournament_selection(population: Array,
     Returns: Candidate that won the tournament
     """
     tournament_key, winner_key = jr.split(key)
+    indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,), p=fitness<1e8)
     indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,))
+
     index = jr.choice(winner_key, indices[jnp.argsort(fitness[indices])], p=tournament_probabilities)
     return population[index]
 
@@ -79,7 +82,7 @@ def evolve_population(population: Array,
     
     Returns: Evolved population
     """
-    left_key, right_key, repro_key, cx_key = jr.split(key, 4)
+    left_key, right_key, repro_key, evo_key = jr.split(key, 4)
     elite = population[jnp.argsort(fitness)[:elite_size]]
 
     left_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None, None])(population, 
@@ -100,7 +103,7 @@ def evolve_population(population: Array,
 
     left_children, right_children = jax.vmap(evolve_trees, in_axes=[0, 0, 0, 0, None, None])(left_parents, 
                                                                                              right_parents, 
-                                                                                             jr.split(cx_key, ((population_size - elite_size)//2, num_trees, 2)), 
+                                                                                             jr.split(evo_key, ((population_size - elite_size)//2, num_trees, 2)), 
                                                                                              reproduction_type, 
                                                                                              reproduction_probability, 
                                                                                              reproduction_functions)

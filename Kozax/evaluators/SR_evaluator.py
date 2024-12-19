@@ -22,8 +22,8 @@ class Evaluator:
         self.max_fitness = 1e5
         self.dt0 = dt0
         if optimize_dimensions is None:
-            # self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Squared Error
-            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys-true_ys), axis=-1)) #Mean Squared Error
+            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Squared Error
+            # self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys-true_ys), axis=-1)) #Mean Squared Error
         else:
             self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys[:,optimize_dimensions]-true_ys[:,optimize_dimensions]), axis=-1))
         self.system = diffrax.ODETerm(self._drift)
@@ -31,7 +31,7 @@ class Evaluator:
         self.stepsize_controller = stepsize_controller
         self.max_steps = max_steps
 
-    def __call__(self, coefficients: Array, nodes: Array, data: Tuple, tree_evaluator: Callable) -> float:
+    def __call__(self, candidate, data: Tuple, tree_evaluator: Callable) -> float:
         """Evaluates the candidate on a task
 
         :param coefficients: The coefficients of the candidate
@@ -41,12 +41,9 @@ class Evaluator:
 
         Returns: Fitness of the candidate
         """
-        fitness, _ = self.evaluate_candidate(jnp.concatenate([nodes, coefficients], axis=-1), data, tree_evaluator)
+        fitness, _ = self.evaluate_candidate(candidate, data, tree_evaluator)
 
-        nan_or_inf =  jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
-        fitness = jnp.where(nan_or_inf, jnp.ones(fitness.shape)*self.max_fitness, fitness)
-        fitness = jnp.mean(fitness)
-        return jnp.clip(fitness,0,self.max_fitness)
+        return jnp.mean(fitness)
     
     def evaluate_candidate(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> Tuple[Array, float]:
         """Evaluates a candidate given a task and data

@@ -88,7 +88,7 @@ def check_invalid_cx_nodes(carry: Tuple[Array, Array, Array, int, int, Array, Ar
                                     False)
 
     #Check if the subtrees can be inserted
-    return (empty_nodes1 < subtree_size2 - subtree_size1) | (empty_nodes2 < subtree_size1 - subtree_size2) | equal_subtrees
+    return (empty_nodes1 < subtree_size2 - subtree_size1) | (empty_nodes2 < subtree_size1 - subtree_size2)# | equal_subtrees
 
 def sample_cx_nodes(carry: Tuple[Array, Array, Array, int, int, Array, Array]) -> Tuple[Array, Array, Array, int, int, Array, Array]:
     """
@@ -120,9 +120,8 @@ def sample_cx_nodes(carry: Tuple[Array, Array, Array, int, int, Array, Array]) -
 def crossover(tree1: Array, 
               tree2: Array, 
               keys: Array,
-              max_nodes: int, 
-              operator_indices: Array,
-              simplify_function: Callable) -> Tuple[Array, Array]:
+              node_ids: Array,
+              operator_indices: Array) -> Tuple[Array, Array]:
     """
     Applies crossover to a pair of trees to produce two new trees
     
@@ -136,7 +135,6 @@ def crossover(tree1: Array,
     """
 
     #Define indices of the nodes
-    node_ids = jnp.arange(max_nodes)
     tree_indices = jnp.tile(node_ids[:,None], reps=(1,4))
     key1, key2 = keys
 
@@ -155,8 +153,8 @@ def crossover(tree1: Array,
     _, _, end_idx2 = jax.lax.while_loop(lambda carry: carry[1]>0, find_end_idx, (tree2, 1, node_idx2))
 
     #Initialize children
-    child1 = jnp.tile(jnp.array([0.0,-1.0,-1.0,0.0]), (max_nodes, 1))
-    child2 = jnp.tile(jnp.array([0.0,-1.0,-1.0,0.0]), (max_nodes, 1))
+    child1 = jnp.tile(jnp.array([0.0,-1.0,-1.0,0.0]), (len(node_ids), 1))
+    child2 = jnp.tile(jnp.array([0.0,-1.0,-1.0,0.0]), (len(node_ids), 1))
 
     #Compute subtree sizes
     subtree_size1 = node_idx1 - end_idx1
@@ -190,15 +188,39 @@ def crossover(tree1: Array,
     child1 = jnp.where((tree_indices >= node_idx1 + 1 - subtree_size2) & (tree_indices < node_idx1 + 1), rolled_subtree2, child1)
     child2 = jnp.where((tree_indices >= node_idx2 + 1 - subtree_size1) & (tree_indices < node_idx2 + 1), rolled_subtree1, child2)
     
-    return simplify_function(child1), simplify_function(child2)
+    return child1, child2
+
+def check_different_tree(parent1, parent2, child1, child2):
+    size1 = jnp.sum(child1[:,0]!=0)
+    size2 = jnp.sum(child2[:,0]!=0)
+    
+    check1 = (jnp.all(parent1 == child1) | jnp.all(parent2 == child1))
+    check2 = (jnp.all(parent1 == child2) | jnp.all(parent2 == child2))
+
+    return ((check1 | check2) & ((size1 > 1) & (size2 > 1))) | (size1 == 0)
+
+def check_different_trees(carry):
+    parent1, parent2, child1, child2, _, _, _, _ = carry
+
+    return jnp.all(jax.vmap(check_different_tree)(parent1, parent2, child1, child2))
+
+def safe_crossover(carry: Tuple[Array, Array, Array, float, Array, Array]):
+    parent1, parent2, _, _, keys, reproduction_probability, node_ids, operator_indices = carry
+    _, cx_indices, _ = jax.lax.while_loop(lambda carry: jnp.sum(carry[1])==0, sample_indices, (keys[0, 0], jnp.zeros(parent1.shape[0]), reproduction_probability))
+    offspring1, offspring2 = jax.vmap(crossover, in_axes=[0,0,0,None,None])(parent1, parent2, keys, node_ids, operator_indices)
+    child1 = jnp.where(cx_indices[:,None,None] * jnp.ones_like(parent1), offspring1, parent1)
+    child2 = jnp.where(cx_indices[:,None,None] * jnp.ones_like(parent2), offspring2, parent2)
+
+    keys = jr.split(keys[0,0], keys.shape[:-1])
+
+    return parent1, parent2, child1, child2, keys, reproduction_probability, node_ids, operator_indices
 
 def crossover_trees(parent1: Array, 
                     parent2: Array, 
                     keys: Array, 
                     reproduction_probability: float, 
                     max_nodes: int, 
-                    operator_indices: Array,
-                    simplify_function: Callable) -> Tuple[Array, Array]:
+                    operator_indices: Array) -> Tuple[Array, Array]:
     """
     Applies crossover to the trees in a pair of candidates
 
@@ -213,8 +235,9 @@ def crossover_trees(parent1: Array,
     """
 
     #Determine to which trees in the candidates crossover is applied
-    _, cx_indices, _ = jax.lax.while_loop(lambda carry: jnp.sum(carry[1])==0, sample_indices, (keys[0, 0], jnp.zeros(parent1.shape[0]), reproduction_probability))
-    offspring1, offspring2 = jax.vmap(crossover, in_axes=[0,0,0,None,None,None])(parent1, parent2, keys, max_nodes, operator_indices, simplify_function)
-    child1 = jnp.where(cx_indices[:,None,None] * jnp.ones_like(parent1), offspring1, parent1)
-    child2 = jnp.where(cx_indices[:,None,None] * jnp.ones_like(parent2), offspring2, parent2)
+
+    _, _, child1, child2, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
+        parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices))
+    # _, _, child1, child2, _, _, _, _ = safe_crossover((parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices))
+    
     return child1, child2

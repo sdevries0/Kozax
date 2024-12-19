@@ -140,3 +140,119 @@ class Evaluator:
     
     def interpolate(self, solve_ts, ys, eval_ts):
         return diffrax.LinearInterpolation(ts=solve_ts, ys=ys).evaluate(eval_ts)
+    
+
+class EvaluatorMT:
+    def __init__(self, env, state_size: int, dt0: float, solver=diffrax.Euler(), max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
+        """Evaluator for dynamic symbolic policies in control tasks
+
+        Attributes:
+            env: Environment on which the candidate is evaluated
+            max_fitness: Max fitness which is assigned when a trajectory returns an invalid value
+            state_size: Dimensionality of the hidden state
+            obs_size: Dimensionality of the observations
+            control_size: Dimensionality of the control
+            latent_size: Dimensionality of the state of the environment
+            dt0: Initial step size for integration
+            solver: Solver used for integration
+            max_steps: The maximum number of steps that can be used in integration
+            stepsize_controller: Controller for the stepsize during integration
+        """
+        self.env = env
+        self.max_fitness = 1e4
+        self.state_size = state_size
+        self.obs_size = env.n_obs
+        self.control_size = env.n_control
+        self.latent_size = env.n_var*env.n_dim
+        self.dt0 = dt0
+        self.solver = solver
+        self.max_steps = max_steps
+        self.stepsize_controller = stepsize_controller
+
+    def __call__(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> float:
+        """Evaluates the candidate on a task
+
+        :param coefficients: The coefficients of the candidate
+        :param nodes: The nodes and index references of the candidate
+        :param data: The data required to evaluate the candidate
+        :param tree_evaluator: Function for evaluating trees
+
+        Returns: Fitness of the candidate
+        """
+        _, _, _, _, fitness = self.evaluate_candidate(candidate, data, tree_evaluator)
+
+        nan_or_inf =  jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
+        fitness = jnp.where(nan_or_inf, jnp.ones(fitness.shape)*self.max_fitness, fitness)
+        fitness = jnp.mean(fitness)
+        return jnp.clip(fitness,0,self.max_fitness)
+    
+    def evaluate_candidate(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> Tuple[Array, Array, Array, Array, float]:
+        """Evaluates a candidate given a task and data
+
+        :param candidate: Candidate that is evaluated
+        :param data: The data required to evaluate the candidate
+        :param tree_evaluator: Function for evaluating trees
+        
+        Returns: Predictions and fitness of the candidate
+        """
+        return jax.vmap(self.evaluate_control_loop, in_axes=[None, 0, None, 0, 0, 0, 0, None])(candidate, *data, tree_evaluator)
+    
+    def evaluate_control_loop(self, candidate: Array, x0: Array, ts: Array, target: float, process_noise_key: jrandom.PRNGKey, obs_noise_key: jrandom.PRNGKey, params: Tuple, tree_evaluator: Callable) -> Tuple[Array, Array, Array, Array, float]:
+        """Solves the coupled differential equation of the system and controller. The differential equation of the system is defined in the environment and the differential equation 
+        of the control is defined by the set of trees
+        Inputs:
+            candidate (NetworkTrees): Candidate with trees for the hidden state and readout
+            x0 (float): Initial state of the system
+            ts (Array[float]): time points on which the controller is evaluated
+            target (float): Target position that the system should reach
+            key (PRNGKey)
+            params (Tuple[float]): Parameters that define the system
+
+        Returns:
+            xs (Array[float]): States of the system at every time point
+            ys (Array[float]): Observations of the system at every time point
+            us (Array[float]): Control of the candidate at every time point
+            activities (Array[float]): Activities of the hidden state of the candidate at every time point
+            fitness (float): Fitness of the candidate 
+        """
+        env = copy.copy(self.env)
+        env.initialize_parameters(params, ts)
+    
+        targets = diffrax.LinearInterpolation(ts, jnp.hstack([t*jnp.ones(int(ts.shape[0]//target.shape[0])) for t in target]))
+
+        solver = self.solver
+        dt0 = self.dt0
+        saveat = diffrax.SaveAt(ts=ts)
+
+        brownian_motion = diffrax.UnsafeBrownianPath(shape=(self.latent_size,), key=process_noise_key, levy_area=diffrax.SpaceTimeLevyArea) #define process noise
+        system = diffrax.MultiTerm(diffrax.ODETerm(self._drift), diffrax.ControlTerm(self._diffusion, brownian_motion))
+        
+        sol = diffrax.diffeqsolve(
+            system, solver, ts[0], ts[-1], dt0, x0, saveat=saveat, adjoint=diffrax.DirectAdjoint(), max_steps=self.max_steps, event=diffrax.Event(self.env.cond_fn_nan), 
+            args=(env, candidate, obs_noise_key, targets, tree_evaluator), stepsize_controller=self.stepsize_controller, throw=True
+        )
+
+        xs = sol.ys
+        _, ys = jax.lax.scan(env.f_obs, obs_noise_key, (ts, xs))
+        target_ts = jax.vmap(lambda t: targets.evaluate(t))(ts)
+        
+        us = jax.vmap(lambda y, tar: tree_evaluator(candidate, jnp.concatenate([y, jnp.array([tar])])), in_axes=[0,0])(ys, target_ts)
+
+
+        fitness = env.fitness_function(xs, us, target_ts, ts)
+
+        return xs, ys, us, fitness       
+    
+    def _drift(self, t, x, args):
+        env, policy, obs_noise_key, target, tree_evaluator = args
+        tar = target.evaluate(t)
+        _, y = env.f_obs(obs_noise_key, (t, x)) #Get observations from system
+        u = tree_evaluator(policy, jnp.concatenate([y, jnp.array([tar])]))
+
+        dx = env.drift(t, x, u) #Apply control to system and get system change
+        return dx
+    
+    def _diffusion(self, t, x, args):
+        env, policy, obs_noise_key, target, tree_evaluator = args
+
+        return env.diffusion(t, x, jnp.array([0]))

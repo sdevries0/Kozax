@@ -100,9 +100,8 @@ def prune_tree(tree: Array,
 def sample_tree(key: PRNGKey, 
                 depth: int, 
                 variable_array: Array, 
-                max_init_depth: int, 
+                tree_size: int, 
                 max_nodes: int, 
-                simplify_function: Callable,
                 args: Tuple) -> Array:
     """
     Initializes a tree
@@ -117,13 +116,11 @@ def sample_tree(key: PRNGKey,
     """
 
     #First sample tree at full size given depth
-    tree_size = 2**max_init_depth-1
     tree = jax.lax.fori_loop(0, tree_size, sample_node, (key, jnp.zeros((tree_size, 4)), 1, depth, max_nodes, variable_array, args))[1] #Sample nodes in a tree sequentially
 
     #Prune empty rows in tree
     pruned_tree =  prune_tree(tree, tree_size, max_nodes)
-    simplified_tree = simplify_function(pruned_tree)
-    return simplified_tree
+    return pruned_tree
 
 def sample_population(key: PRNGKey, 
                       population_size: int, 
