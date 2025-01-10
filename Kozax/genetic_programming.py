@@ -30,6 +30,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
 import sympy
+import equinox as eqx
 
 from typing import Tuple, Callable
 import time
@@ -106,7 +107,7 @@ class GeneticProgramming:
                  learning_rate_decay: float = 0.99,
                  max_fitness: float = 1e8,
                  selection_pressure_factors: Tuple[float] = (0.9, 0.9),
-                 reproduction_probability_factors: Tuple[float] = (1.0, 0.5),
+                 reproduction_probability_factors: Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: Tuple[float] = (0.1, 0.9),
                  sample_probability_factors: Tuple[float] = (0.0, 0.0)) -> None:
@@ -159,6 +160,10 @@ class GeneticProgramming:
         self.learning_rate_decay = learning_rate_decay
 
         self.max_fitness = max_fitness
+
+        self.max_complexity = self.num_trees * self.max_nodes
+        self.complexities = jnp.arange(self.max_complexity)
+        self.pareto_front = (jnp.ones(self.max_complexity) * self.max_fitness, jnp.zeros((self.max_complexity, self.num_trees, self.max_nodes, 4)))
 
         self.map_b_to_d = self.create_map_b_to_d(jnp.maximum(self.max_init_depth, 3))
 
@@ -294,19 +299,16 @@ class GeneticProgramming:
                                          max_nodes = self.max_nodes)
 
         self.reproduction_functions = [self.partial_crossover, self.mutate_pair, self.sample_pair]
-        # self.reproduction_functions = [self.partial_crossover, self.partial_crossover, self.partial_crossover]
-        # self.reproduction_functions = [self.mutate_pair, self.mutate_pair, self.mutate_pair]
 
-
-        self.jit_evolve_population = jax.jit(jax.vmap(partial(evolve_population, 
+        self.jit_evolve_population = jax.jit(eqx.debug.assert_max_traces(jax.vmap(partial(evolve_population, 
                                                      reproduction_functions = self.reproduction_functions, 
                                                      elite_size = self.elite_size, 
                                                      tournament_size = self.tournament_size, 
                                                      num_trees = self.num_trees, 
                                                      population_size=population_size),
-                                                    in_axes=[0, 0, 0, 0, 0, 0, None]))
+                                                    in_axes=[0, 0, 0, 0, 0, 0, None]), max_traces=1))
         
-        self.jit_simplification = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_tree))))
+        self.jit_simplification = jax.jit(eqx.debug.assert_max_traces(jax.vmap(jax.vmap(jax.vmap(self.simplify_tree))), max_traces=1))
 
         #Define partial fitness function for evaluation
         self.jit_body_fun = partial(self.body_fun, node_function_list = self.node_function_list)
@@ -349,8 +351,8 @@ class GeneticProgramming:
             result, _array = self.optimise_coefficients_function(array, data, keys)
             return result, _array
         
-        self.jit_eval = jax.jit(shard_eval)
-        self.jit_optimise = jax.jit(shard_optimise)
+        self.jit_eval = jax.jit(eqx.debug.assert_max_traces(shard_eval, max_traces=1))
+        self.jit_optimise = jax.jit(eqx.debug.assert_max_traces(shard_optimise, max_traces=1))
 
     def create_map_b_to_d(self, depth: int) -> Array:
         """
@@ -436,9 +438,9 @@ class GeneticProgramming:
 
             rounded_expression = simplified_expression
 
-            # for a in sympy.preorder_traversal(simplified_expression):
-            #     if isinstance(a, sympy.Float):
-            #         rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
+            for a in sympy.preorder_traversal(simplified_expression):
+                if isinstance(a, sympy.Float):
+                    rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
 
             return rounded_expression
 
@@ -526,6 +528,7 @@ class GeneticProgramming:
         data = jax.device_put(data, self.data_mesh)
         
         # fitness = self.jit_eval(populations, data) #Evaluate the candidates
+        # print("eval")
         fitness = self.jit_eval(flat_populations, data) #Evaluate the candidates
 
         #Optimise coefficients of the best candidates given conditions
@@ -534,18 +537,21 @@ class GeneticProgramming:
             best_candidates_idx = jnp.argsort(fitness)[:self.optimise_coefficients_elite]
             # best_candidates_idx = jr.choice(jr.PRNGKey(self.current_generation), jnp.arange(0, flat_populations.shape[0]), shape=(self.optimise_coefficients_elite,), p=1/fitness)
             best_candidates = flat_populations[best_candidates_idx]
+            # print("optimise ", jnp.mean(fitness))
             optimised_fitness, optimised_population = self.jit_optimise(best_candidates, data, jr.split(key, self.optimise_coefficients_elite))
             flat_populations = flat_populations.at[best_candidates_idx].set(optimised_population)
             fitness = fitness.at[best_candidates_idx].set(optimised_fitness)
+            # print("done ", jnp.mean(optimised_fitness))
 
         # fitness, flat_populations = self.jit_optimise(flat_populations, data, jr.split(key, self.num_populations*self.population_size))
+            
+        self.update_pareto_front(fitness, flat_populations)
 
         fitness = fitness + jax.vmap(lambda array: self.size_parsimony * jnp.sum(array[:,:,0]!=0))(flat_populations) #Increase fitness based on the size of the candidate
 
         best_solution = flat_populations[jnp.argmin(fitness)]
         best_fitness = jnp.min(fitness)
 
-            
         #Store best fitness and solution
         self.best_solutions = self.best_solutions.at[self.current_generation].set(best_solution)
         self.best_fitnesses = self.best_fitnesses.at[self.current_generation].set(best_fitness)
@@ -557,6 +563,37 @@ class GeneticProgramming:
 
 
         return fitness, populations
+    
+    def update_pareto_front(self, current_fitness, current_population):
+        current_population_complexity = jax.vmap(lambda array: jnp.sum(array[:,:,0]!=0))(current_population)
+        pareto_fitness, pareto_solutions = self.pareto_front
+        new_pareto_front = jax.vmap(self.find_best_solution_given_complexity_level, in_axes=[0, None, None, None, 0, 0])(self.complexities, 
+                                                                                                             current_fitness, 
+                                                                                                             current_population, 
+                                                                                                             current_population_complexity,
+                                                                                                             pareto_fitness,
+                                                                                                             pareto_solutions)
+
+        self.pareto_front = new_pareto_front
+
+    def find_best_solution_given_complexity_level(self, complexity, current_fitness, current_population, current_population_complexity, best_fitness, best_solution):
+        fitness_at_complexity_level = jnp.where(current_population_complexity == complexity, current_fitness, jnp.ones_like(current_fitness) * self.max_fitness)
+        best_fitness_at_complexity_level = jnp.min(fitness_at_complexity_level)
+        best_solution_at_complexity_level = current_population[jnp.argmin(fitness_at_complexity_level)]
+
+        new_best_fitness = jax.lax.select(best_fitness_at_complexity_level > best_fitness, best_fitness, best_fitness_at_complexity_level)
+        new_best_solution = jax.lax.select(best_fitness_at_complexity_level > best_fitness, best_solution, best_solution_at_complexity_level)
+
+        return new_best_fitness, new_best_solution
+    
+    def print_pareto_front(self):
+        pareto_fitness, pareto_solutions = self.pareto_front
+        best_pareto_fitness = jnp.inf
+
+        for c in range(self.complexities):
+            if pareto_fitness[c] < best_pareto_fitness: 
+                print(f"Complexity: {c}, fitness: {pareto_fitness[c]}, equations: {self.to_string(pareto_solutions[c])}")
+                best_pareto_fitness = pareto_fitness[c]
             
     def optimise_epoch(self, carry: Tuple[Array, Array, Tuple], x: int) -> Tuple[Tuple[Array, Array, Tuple], Tuple[Array, Array]]:
         """
@@ -632,6 +669,12 @@ class GeneticProgramming:
     def increase_generation(self):
         self.current_generation += 1
 
+    def punish_duplicates(self, population, fitness):
+        _, indices, counts = jnp.unique(population, return_index=True, return_counts=True, axis=0, size=self.population_size)
+        population = population[indices]
+        fitness = fitness[indices]
+        return population, jnp.where(counts > 0, fitness, self.max_fitness)
+
     def evolve(self, populations: Array, fitness: Array, key: PRNGKey) -> Array:
         """
         Evolves each population independently
@@ -643,7 +686,9 @@ class GeneticProgramming:
         Returns: Evolved populations
         
         """
-        populations = evolve_populations(self.jit_evolve_population, 
+        populations, fitness = jax.vmap(self.punish_duplicates)(populations, fitness)
+
+        new_populations = evolve_populations(self.jit_evolve_population, 
                                          populations, 
                                          fitness, 
                                          key, 
@@ -655,7 +700,7 @@ class GeneticProgramming:
                                          self.tournament_probabilities)
         self.increase_generation()
         self.learning_rate = jnp.maximum(self.learning_rate * self.learning_rate_decay, 0.001)
-        return self.jit_simplification(populations)
+        return self.jit_simplification(new_populations)
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
         """

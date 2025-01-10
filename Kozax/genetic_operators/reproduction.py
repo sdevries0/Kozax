@@ -65,7 +65,7 @@ def tournament_selection(population: Array,
     Returns: Candidate that won the tournament
     """
     tournament_key, winner_key = jr.split(key)
-    indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,), p=fitness<1e8)
+    # indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,), p=fitness<1e8)
     indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,))
 
     index = jr.choice(winner_key, indices[jnp.argsort(fitness[indices])], p=tournament_probabilities)
@@ -151,12 +151,15 @@ def migrate_population(receiver: Array,
     """
     sorted_receiver = receiver[jnp.argsort(receiver_fitness, descending=True)]
     sorted_sender = sender[jnp.argsort(sender_fitness, descending=False)]
-    return jnp.where((population_indices < migration_size)[:,None,None,None], sorted_sender, sorted_receiver)
+    migrated_population = jnp.where((population_indices < migration_size)[:,None,None,None], sorted_sender, sorted_receiver)
+    migrated_fitness = jnp.where(population_indices < migration_size, jnp.sort(sender_fitness, descending=False), jnp.sort(receiver_fitness, descending=True))
+    return migrated_population, migrated_fitness
 
 def evolve_populations(jit_evolve_population: Callable, 
                        populations: Array, 
                        fitness: Array, 
-                       key: PRNGKey, current_generation: int, 
+                       key: PRNGKey, 
+                       current_generation: int, 
                        migration_period: int, 
                        migration_size: int, 
                        reproduction_type_probabilities: Array, 
@@ -180,14 +183,15 @@ def evolve_populations(jit_evolve_population: Callable,
     num_populations, population_size, num_trees, _, _ = populations.shape
     population_indices = jnp.arange(population_size)
 
-    populations = jax.lax.select((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
-                                    jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, None, None])(populations, 
-                                                                                                   jnp.roll(populations, 1, axis=0), 
-                                                                                                   fitness, 
-                                                                                                   jnp.roll(fitness, 1, axis=0), 
-                                                                                                   migration_size, 
-                                                                                                   population_indices), 
-                                    populations)
+    populations, fitness = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
+                                    jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, None, None]), 
+                                    jax.vmap(lambda receiver, sender, receiver_fitness, sender_fitness, migration_size, population_indices: (receiver, receiver_fitness), in_axes=[0, 0, 0, 0, None, None]), 
+                                        populations, 
+                                        jnp.roll(populations, 1, axis=0), 
+                                        fitness, 
+                                        jnp.roll(fitness, 1, axis=0), 
+                                        migration_size, 
+                                        population_indices)
     
     new_population = jit_evolve_population(populations, 
                                         fitness, 
