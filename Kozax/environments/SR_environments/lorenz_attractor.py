@@ -1,5 +1,5 @@
 """
-Kozax: Genetic programming framework in JAX
+kozax: Genetic programming framework in JAX
 
 Copyright (c) 2024 sdevries0
 
@@ -20,7 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from Kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
+from kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
 
 class LorenzAttractor(EnvironmentBase):
     def __init__(self, process_noise, obs_noise, n_obs=3):
@@ -67,6 +67,9 @@ class Lorenz96(EnvironmentBase):
     def sample_init_states(self, batch_size, key):
         return self.init_mu + self.init_sd*jrandom.normal(key, shape=(batch_size,self.n_var))
         # return jnp.ones((batch_size, 3))
+    
+    def sample_init_state2(self, ys, batch_size, key):
+        return ys[jrandom.choice(key, jnp.arange(ys.shape[0]), shape=(batch_size,), replace=False)]
     
     def drift(self, t, state, args):
         f = lambda x_cur, x_next, x_prev1, x_prev2: (x_next - x_prev2) * x_prev1 - x_cur + self.F

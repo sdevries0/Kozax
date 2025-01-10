@@ -1,4 +1,4 @@
-Kozax: Genetic programming framework in JAX
+kozax: Genetic programming framework in JAX
 
 Copyright (c) 2024 sdevries0
 

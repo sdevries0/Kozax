@@ -1,5 +1,5 @@
 """
-Kozax: Genetic programming framework in JAX
+kozax: Genetic programming framework in JAX
 
 Copyright (c) 2024 sdevries0
 
@@ -20,7 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from Kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
+from kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
 
 class LotkaVolterra(EnvironmentBase):
     def __init__(self, process_noise, obs_noise, n_obs=2):

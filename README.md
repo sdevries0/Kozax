@@ -1,8 +1,8 @@
-# Kozax: Genetic Programming in JAX
-Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, Just-in-time compilation provides massive speedups for evolving offspring.
+# kozax: Genetic Programming in JAX
+kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, Just-in-time compilation provides massive speedups for evolving offspring.
 
 # Features
-Kozax allows the user to:
+kozax allows the user to:
 - define custom operators
 - define custom fitness functions
 - use trees flexibly, ranging from symbolic regression to reinforcement learning
@@ -10,7 +10,7 @@ Kozax allows the user to:
 - numerically optimise constants in the computer programs
 
 # How to use
-Below is a short demo showing how you can use Kozax. First we generate data:
+Below is a short demo showing how you can use kozax. First we generate data:
 ```python
 import jax
 import jax.numpy as jnp
@@ -35,7 +35,7 @@ fitness_function = FitnessFunction()
 
 Now we will use genetic programming to recover the equation from the data. This requires defining the hyperparameters, initializing the population and the general loop of evaluating and evolving the population.
 ```python
-from Kozax.genetic_programming import GeneticProgramming
+from kozax.genetic_programming import GeneticProgramming
 
 #Define hyperparameters
 population_size = 500
@@ -56,7 +56,7 @@ best_fitnesses, best_solutions = strategy.get_statistics()
 print(f"The best solution is {strategy.to_string(best_solutions[-1])} with a fitness of {best_fitnesses[-1]}")
 ```
 
-There are additional [examples](https://github.com/sdevries0/Kozax/tree/main/examples) on how to use Kozax on more complex problems.
+There are additional [examples](https://github.com/sdevries0/kozax/tree/main/examples) on how to use kozax on more complex problems.
 
 
 # Citation

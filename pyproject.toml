@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+ 
+[project]
+name = "kozax"
+version = "0.0.1"
+description = "Genetic programming library in JAX."
+readme = "README.md"
+license = {file = "LICENSE.md"}
+requires-python = "~=3.10"
+authors = [
+    {name = "Sigur de Vries", email = "sigur@hotmail.nl"},
+    ]
+keywords = ["JAX", "Genetic programming", "Symbolic regression", "Evolutionary algorithms"]
+url = {repository = "https://github.com/sdevries0/kozax"}
+dependencies = [
+    "jax>=0.4.31",
+    "sympy>=1.13.3"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License (GPL) 3.0",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Natural Language :: English",
+]   
+[tool.hatch.build]
+include = ["kozax/*"]

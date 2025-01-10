@@ -1,5 +1,5 @@
 """
-Kozax: Genetic programming framework in JAX
+kozax: Genetic programming framework in JAX
 
 Copyright (c) 2024 sdevries0
 
@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
-from Kozax.environments.control_environments.control_environment_base import EnvironmentBase
+from kozax.environments.control_environments.control_environment_base import EnvironmentBase
 
 class CartPole(EnvironmentBase):
     def __init__(self, process_noise, obs_noise, n_obs = 4):
