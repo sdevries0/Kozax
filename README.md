@@ -6,8 +6,8 @@ Kozax allows the user to:
 - define custom operators
 - define custom fitness functions
 - use trees flexibly, ranging from symbolic regression to reinforcement learning
-- evolve multiple trees simultenously, even with different inputs
-- optimise constants in the computer programs
+- evolve multiple trees simultaneously, even with different inputs
+- numerically optimise constants in the computer programs
 
 # How to use
 Below is a short demo showing how you can use Kozax. First we generate data:
