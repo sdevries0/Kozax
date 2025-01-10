@@ -34,8 +34,8 @@ fitness_function = FitnessFunction()
 ```
 
 Now we will use genetic programming to recover the equation from the data. This requires defining the hyperparameters, initializing the population and the general loop of evaluating and evolving the population.
-```
-from MultiTreeGP.genetic_programming import GeneticProgramming
+```python
+from Kozax.genetic_programming import GeneticProgramming
 
 #Define hyperparameters
 population_size = 500
@@ -46,14 +46,14 @@ strategy = GeneticProgramming(num_generations, population_size, fitness_function
 population = strategy.initialize_population(init_key)
 
 for g in range(num_generations):
-    fitness, population = strategy.evaluate_population(population, (x[:,None], y[:,None]))
+    key, eval_key, sample_key = jr.split(key, 3)
+    fitness, population = strategy.evaluate_population(population, (x[:,None], y[:,None]), eval_key)
 
     if g < (num_generations-1):
-        key, sample_key = jr.split(key)
         population = strategy.evolve(population, fitness, sample_key)
 
 best_fitnesses, best_solutions = strategy.get_statistics()
-print(f"The best solution is {strategy.to_string(best_solution[-1])} with a fitness of {best_fitnesses[-1]}")
+print(f"The best solution is {strategy.to_string(best_solutions[-1])} with a fitness of {best_fitnesses[-1]}")
 ```
 
 There are additional [examples](https://github.com/sdevries0/Kozax/tree/main/examples) on how to use Kozax on more complex problems.
