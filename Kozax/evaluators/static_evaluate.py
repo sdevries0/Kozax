@@ -53,7 +53,7 @@ class Evaluator:
         self.max_steps = max_steps
         self.stepsize_controller = stepsize_controller
 
-    def __call__(self, coefficients: Array, nodes: Array, data: Tuple, tree_evaluator: Callable) -> float:
+    def __call__(self, candidate, data: Tuple, tree_evaluator: Callable) -> float:
         """Evaluates the candidate on a task
 
         :param coefficients: The coefficients of the candidate
@@ -63,7 +63,7 @@ class Evaluator:
 
         Returns: Fitness of the candidate
         """
-        _, _, _, fitness = self.evaluate_candidate(jnp.concatenate([nodes, coefficients], axis=-1), data, tree_evaluator)
+        _, _, _, fitness = self.evaluate_candidate(candidate, data, tree_evaluator)
 
         nan_or_inf =  jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
         fitness = jnp.where(nan_or_inf, jnp.ones(fitness.shape)*self.max_fitness, fitness)
@@ -107,7 +107,8 @@ class Evaluator:
         # solve_ts = jnp.arange(0,50,dt0)
 
         brownian_motion = diffrax.UnsafeBrownianPath(shape=(self.latent_size,), key=process_noise_key, levy_area=diffrax.SpaceTimeLevyArea) #define process noise
-        system = diffrax.MultiTerm(diffrax.ODETerm(self._drift), diffrax.ControlTerm(self._diffusion, brownian_motion))
+        # system = diffrax.MultiTerm(diffrax.ODETerm(self._drift), diffrax.ControlTerm(self._diffusion, brownian_motion))
+        system = diffrax.ODETerm(self._drift)
         
         sol = diffrax.diffeqsolve(
             system, solver, ts[0], ts[-1], dt0, x0, saveat=saveat, adjoint=diffrax.DirectAdjoint(), max_steps=self.max_steps, event=diffrax.Event(self.env.cond_fn_nan), 

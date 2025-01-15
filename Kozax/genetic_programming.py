@@ -34,6 +34,8 @@ import sympy
 from typing import Tuple, Callable
 import time
 
+import numpy as np
+
 from kozax.genetic_operators.crossover import crossover_trees
 from kozax.genetic_operators.initialization import sample_population, sample_tree
 from kozax.genetic_operators.mutation import initialize_mutation_functions
@@ -87,7 +89,7 @@ class GeneticProgramming:
                  layer_sizes: Array = jnp.array([1]),
                  num_populations: int = 1,
                  max_init_depth: int = 4,
-                 max_nodes: int = 30,
+                 max_nodes: int = 20,
                  device_type: str = 'cpu',
                  tournament_size: int = 7, 
                  size_parsimony: float = 0.0, 
@@ -123,11 +125,8 @@ class GeneticProgramming:
         self.num_trees = jnp.sum(self.layer_sizes)
         assert self.num_trees>0, "The number of trees should be larger than 0"
 
-        self.current_generation = 0
         assert num_generations>0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
-        self.best_fitnesses = jnp.zeros(self.num_generations)
-        self.best_solutions = jnp.zeros((self.num_generations, self.num_trees, self.max_nodes, 4))
 
         self.size_parsimony = size_parsimony
         self.coefficient_sd = coefficient_sd
@@ -155,14 +154,13 @@ class GeneticProgramming:
             assert gradient_steps>0, "The number of gradient steps should be larger than 0"
         self.gradient_steps = gradient_steps
         self.optimiser_class = optimiser_class
-        self.learning_rate = init_learning_rate
+        self.init_learning_rate = init_learning_rate
         self.learning_rate_decay = learning_rate_decay
 
         self.max_fitness = max_fitness
 
         self.max_complexity = self.num_trees * self.max_nodes
         self.complexities = jnp.arange(self.max_complexity)
-        self.pareto_front = (jnp.ones(self.max_complexity) * self.max_fitness, jnp.zeros((self.max_complexity, self.num_trees, self.max_nodes, 4)))
 
         self.map_b_to_d = self.create_map_b_to_d(jnp.maximum(self.max_init_depth, 3))
 
@@ -354,6 +352,16 @@ class GeneticProgramming:
         self.jit_eval = jax.jit(shard_eval)
         self.jit_optimise = jax.jit(shard_optimise)
 
+        self.reset()
+
+    def reset(self):
+        self.current_generation = 0
+        self.best_fitnesses = jnp.zeros(self.num_generations)
+        self.best_solutions = jnp.zeros((self.num_generations, self.num_trees, self.max_nodes, 4))
+        self.learning_rate = self.init_learning_rate
+
+        self.pareto_front = (jnp.ones(self.max_complexity) * self.max_fitness, jnp.zeros((self.max_complexity, self.num_trees, self.max_nodes, 4)))
+
     def create_map_b_to_d(self, depth: int) -> Array:
         """
         Creates a mapping from the breadth first index to depth first index given a depth
@@ -444,9 +452,30 @@ class GeneticProgramming:
 
             return rounded_expression
 
+        # for tree in candidate:
+        #     # if tree_index==0: #Begin layer of trees
+        #     #     string_output += "["
+        #     simplified_expression = sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(tree))
+
+        #     rounded_expression = simplified_expression
+
+        #     for a in sympy.preorder_traversal(simplified_expression):
+        #         if isinstance(a, sympy.Float):
+        #             rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
+
+        #     string_output += str(rounded_expression) #Map tree to string
+        #     if tree_index < (self.layer_sizes[layer_index] - 1): #Continue layer of trees
+        #         string_output += ", "
+        #         tree_index += 1
+        #     else: #End layer of trees
+        #         # string_output += "]"
+        #         if layer_index < (self.layer_sizes.shape[0] - 1): #Begin new layer
+        #             string_output += ", "
+        #         tree_index = 0
+        #         layer_index += 1
+
+        string_output = []
         for tree in candidate:
-            if tree_index==0: #Begin layer of trees
-                string_output += "["
             simplified_expression = sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(tree))
 
             rounded_expression = simplified_expression
@@ -455,16 +484,8 @@ class GeneticProgramming:
                 if isinstance(a, sympy.Float):
                     rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
 
-            string_output += str(rounded_expression) #Map tree to string
-            if tree_index < (self.layer_sizes[layer_index] - 1): #Continue layer of trees
-                string_output += ", "
-                tree_index += 1
-            else: #End layer of trees
-                string_output += "]"
-                if layer_index < (self.layer_sizes.shape[0] - 1): #Begin new layer
-                    string_output += ", "
-                tree_index = 0
-                layer_index += 1
+            string_output.append(rounded_expression)
+
         return string_output
     
     def body_fun(self, i, carry: Tuple[Array, Array], node_function_list):
@@ -534,8 +555,8 @@ class GeneticProgramming:
         #Optimise coefficients of the best candidates given conditions
         if (self.coefficient_optimisation & (self.current_generation>=self.start_coefficient_optimisation)):
             self.optimiser = self.optimiser_class(self.learning_rate)
-            best_candidates_idx = jnp.argsort(fitness)[:self.optimise_coefficients_elite]
-            # best_candidates_idx = jr.choice(jr.PRNGKey(self.current_generation), jnp.arange(0, flat_populations.shape[0]), shape=(self.optimise_coefficients_elite,), p=1/fitness)
+            # best_candidates_idx = jnp.argsort(fitness)[:self.optimise_coefficients_elite]
+            best_candidates_idx = jr.choice(jr.PRNGKey(self.current_generation), jnp.arange(0, flat_populations.shape[0]), shape=(self.optimise_coefficients_elite,), p=1/fitness)
             best_candidates = flat_populations[best_candidates_idx]
             # print("optimise ", jnp.mean(fitness))
             optimised_fitness, optimised_population = self.jit_optimise(best_candidates, data, jr.split(key, self.optimise_coefficients_elite))
@@ -577,23 +598,46 @@ class GeneticProgramming:
         self.pareto_front = new_pareto_front
 
     def find_best_solution_given_complexity_level(self, complexity, current_fitness, current_population, current_population_complexity, best_fitness, best_solution):
-        fitness_at_complexity_level = jnp.where(current_population_complexity == complexity, current_fitness, jnp.ones_like(current_fitness) * self.max_fitness)
+        fitness_at_complexity_level = jnp.where(current_population_complexity == complexity, 
+                                                current_fitness, 
+                                                jnp.ones_like(current_fitness) * self.max_fitness)
         best_fitness_at_complexity_level = jnp.min(fitness_at_complexity_level)
-        best_solution_at_complexity_level = jax.lax.select(best_fitness_at_complexity_level == self.max_fitness, self.empty_candidate, current_population[jnp.argmin(fitness_at_complexity_level)])
+        best_solution_at_complexity_level = jax.lax.select(best_fitness_at_complexity_level == self.max_fitness, 
+                                                           self.empty_candidate, 
+                                                           current_population[jnp.argmin(fitness_at_complexity_level)])
 
         new_best_fitness = jax.lax.select(best_fitness_at_complexity_level > best_fitness, best_fitness, best_fitness_at_complexity_level)
         new_best_solution = jax.lax.select(best_fitness_at_complexity_level > best_fitness, best_solution, best_solution_at_complexity_level)
 
         return new_best_fitness, new_best_solution
     
-    def print_pareto_front(self):
+    def print_pareto_front(self, save = False, file_name = None):
         pareto_fitness, pareto_solutions = self.pareto_front
         best_pareto_fitness = self.max_fitness
 
+        if save:
+            complexities = ['Complexity', 'Fitness']
+            for i in range(self.num_trees):
+                complexities.append(f'Equation {i}')
+            complexities = [tuple(complexities)]
+
         for c in range(self.max_complexity):
             if pareto_fitness[c] < best_pareto_fitness: 
-                print(f"Complexity: {c}, fitness: {pareto_fitness[c]}, equations: {self.to_string(pareto_solutions[c])}")
+                string_equations = self.to_string(pareto_solutions[c])
+                print(f"Complexity: {c}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
                 best_pareto_fitness = pareto_fitness[c]
+
+                if save:
+                    if self.num_trees>1:
+                        temp = (c, pareto_fitness[c])
+                        for tree in string_equations:
+                            temp += (tree,)
+                        complexities.append(temp)
+                    else:
+                        complexities.append((c, pareto_fitness[c], string_equations))
+
+        if save:
+            np.savetxt(f'{file_name}.csv', complexities, delimiter=',', fmt='%s')        
             
     def optimise_epoch(self, carry: Tuple[Array, Array, Tuple], x: int) -> Tuple[Tuple[Array, Array, Tuple], Tuple[Array, Array]]:
         """
@@ -659,7 +703,6 @@ class GeneticProgramming:
         fitness = jnp.clip(fitness,0,self.max_fitness)
 
         return (offspring[jnp.argmin(fitness)], data, key), jnp.min(fitness)
-
 
     def optimise_ES(self, candidate: Array, data: Tuple, key: PRNGKey, n_iterations: int):
         (new_candidate, _, _), fitness = jax.lax.scan(self.optimise_generation, (candidate, data, key), length=n_iterations)

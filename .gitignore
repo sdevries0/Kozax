@@ -1,1 +1,4 @@
 *.pyc
+version.py
+pyproject.toml
+dist/*
