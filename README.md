@@ -2,7 +2,7 @@
 Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, just-in-time compilation provides massive speedups for evolving offspring.
 
 # Features
-kozax allows the user to:
+Kozax allows the user to:
 - define custom operators
 - define custom fitness functions
 - use trees flexibly, ranging from symbolic regression to reinforcement learning
@@ -10,6 +10,9 @@ kozax allows the user to:
 - numerically optimise constants in the computer programs
 
 # How to use
+You can install Kozax via pip with
+```pip install kozax```
+
 Below is a short demo showing how you can use kozax. First we generate data:
 ```python
 import jax
