@@ -29,7 +29,6 @@ class Evaluator:
     """Evaluator for candidates on symbolic regression tasks
 
     Attributes:
-        max_fitness: Max fitness which is assigned when a trajectory returns an invalid value
         dt0: Initial step size for integration
         fitness_function: Function that computes the fitness of a candidate
         system: ODE term of the drift function
@@ -38,13 +37,15 @@ class Evaluator:
         max_steps: The maximum number of steps that can be used in integration
     """
     def __init__(self, solver: diffrax.AbstractSolver = diffrax.Euler(), dt0: float = 0.01, max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize(), optimize_dimensions: Array = None) -> None:
-        self.max_fitness = 1e5
         self.dt0 = dt0
         if optimize_dimensions is None:
-            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Squared Error
-            # self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys-true_ys), axis=-1)) #Mean Squared Error
+            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Absolute Error
         else:
-            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.square(pred_ys[:,optimize_dimensions]-true_ys[:,optimize_dimensions]), axis=-1))
+            if len(optimize_dimensions) > 1:
+                self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys[:,optimize_dimensions]-true_ys[:,optimize_dimensions]), axis=-1))/jnp.mean(true_ys[:,optimize_dimensions])
+            else:
+                self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.abs(pred_ys[:,optimize_dimensions]-true_ys[:,optimize_dimensions]))/jnp.mean(true_ys[:,optimize_dimensions])
+
         self.system = diffrax.ODETerm(self._drift)
         self.solver = solver
         self.stepsize_controller = stepsize_controller
@@ -103,7 +104,7 @@ class Evaluator:
             adjoint=diffrax.DirectAdjoint(), throw=False, event=event_nan
         )
         pred_ys = sol.ys
-        fitness = self.fitness_function(pred_ys, ys)
+        fitness = self.fitness_function(pred_ys, ys) + 1.0*jnp.mean(jnp.where(pred_ys<0, jnp.abs(pred_ys), 0))
 
         return fitness, pred_ys
     
