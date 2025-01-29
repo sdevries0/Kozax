@@ -68,4 +68,4 @@ for g in range(num_generations):
 strategy.print_pareto_front()
 ```
 
-There are additional [examples](./examples/) on how to use kozax on more complex problems.
+There are additional [examples](examples/) on how to use kozax on more complex problems.
