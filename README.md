@@ -64,16 +64,4 @@ for g in range(num_generations):
 strategy.print_pareto_front()
 ```
 
-There are additional [examples](https://github.com/sdevries0/kozax/tree/main/examples) on how to use kozax on more complex problems.
-
-
-# Citation
-If you make use of this code in your research paper, please cite:
-```
-@article{de2024discovering,
-  title={Discovering Dynamic Symbolic Policies with Genetic Programming},
-  author={de Vries, Sigur and Keemink, Sander and van Gerven, Marcel},
-  journal={arXiv preprint arXiv:2406.02765},
-  year={2024}
-}
-```
+There are additional [examples](/kozax/tree/main/examples) on how to use kozax on more complex problems.
