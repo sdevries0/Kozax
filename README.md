@@ -61,7 +61,7 @@ for g in range(num_generations):
         #Evolve a new population
         population = strategy.evolve(population, fitness, sample_key)
 
-strategt.print_pareto_front()
+strategy.print_pareto_front()
 ```
 
 There are additional [examples](https://github.com/sdevries0/kozax/tree/main/examples) on how to use kozax on more complex problems.
