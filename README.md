@@ -1,3 +1,5 @@
+![Alt text](figures/logo.pdf)
+
 # Kozax: Genetic Programming in JAX
 Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, just-in-time compilation provides massive speedups for evolving offspring.
 
@@ -64,4 +66,4 @@ for g in range(num_generations):
 strategy.print_pareto_front()
 ```
 
-There are additional [examples](/kozax/tree/main/examples) on how to use kozax on more complex problems.
+There are additional [examples](kozax/tree/main/examples) on how to use kozax on more complex problems.
