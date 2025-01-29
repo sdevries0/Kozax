@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./figures/logo.png" width="300">
+  <img src="figures/logo.png" width="300">
 </div>
 
 # Kozax: Flexible and Scalable Genetic Programming in JAX
