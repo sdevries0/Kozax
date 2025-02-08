@@ -1,5 +1,5 @@
 # Kozax: Genetic Programming in JAX
-Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, just-in-time compilation provides massive speedups for evolving offspring.
+Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, just-in-time compilation provides massive speedups for evolving offspring. Check out the [paper](https://arxiv.org/abs/2502.03047) introducing Kozax.
 
 # Features
 Kozax allows the user to:
@@ -70,10 +70,10 @@ There are additional [examples](https://github.com/sdevries0/kozax/tree/main/exa
 # Citation
 If you make use of this code in your research paper, please cite:
 ```
-@article{de2024discovering,
-  title={Discovering Dynamic Symbolic Policies with Genetic Programming},
-  author={de Vries, Sigur and Keemink, Sander and van Gerven, Marcel},
-  journal={arXiv preprint arXiv:2406.02765},
-  year={2024}
+@article{de2025kozax,
+  title={Kozax: Flexible and Scalable Genetic Programming in JAX},
+  author={de Vries, Sigur and Keemink, Sander W and van Gerven, Marcel AJ},
+  journal={arXiv preprint arXiv:2502.03047},
+  year={2025}
 }
 ```
