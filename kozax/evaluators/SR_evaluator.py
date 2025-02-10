@@ -39,7 +39,8 @@ class Evaluator:
     def __init__(self, solver: diffrax.AbstractSolver = diffrax.Euler(), dt0: float = 0.01, max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize(), optimize_dimensions: Array = None) -> None:
         self.dt0 = dt0
         if optimize_dimensions is None:
-            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Absolute Error
+            #self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys-true_ys), axis=-1))/jnp.mean(true_ys) #Mean Absolute Error
+            self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(jnp.sort(pred_ys,axis=0)-jnp.sort(true_ys,axis=0)), axis=-1))/jnp.mean(true_ys)
         else:
             if len(optimize_dimensions) > 1:
                 self.fitness_function = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys[:,optimize_dimensions]-true_ys[:,optimize_dimensions]), axis=-1))/jnp.mean(true_ys[:,optimize_dimensions])

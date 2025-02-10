@@ -173,9 +173,9 @@ class GeneticProgramming:
         node_function_list = [lambda x, y, _data: 0.0, lambda x, y, _data: 0.0]
 
         if operator_list is None:
-            operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.5), 
+            operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.1), 
                  ("-", lambda x, y: jnp.subtract(x, y), 2, 0.1),
-                 ("*", lambda x, y: jnp.multiply(x, y), 2, 0.5),
+                 ("*", lambda x, y: jnp.multiply(x, y), 2, 0.1),
                  ("/", lambda x, y: jnp.divide(x, y), 2, 0.1),
                  ("**", lambda x, y: jnp.power(x, y), 2, 0.1)
                  ]
@@ -341,7 +341,7 @@ class GeneticProgramming:
             nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
             fitness = jnp.where(nan_or_inf, jnp.ones(fitness.shape)*self.max_fitness, fitness)
             
-            return jnp.clip(fitness,0,self.max_fitness)
+            return jnp.minimum(fitness,self.max_fitness*jnp.ones_like(fitness))
             
         @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i')), out_specs=(P('i'), P('i')), check_rep=False)
         def shard_optimise(array, data, keys):
@@ -656,7 +656,7 @@ class GeneticProgramming:
         nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(loss)
         loss = jnp.where(nan_or_inf, jnp.ones(loss.shape)*self.max_fitness, loss)
             
-        loss = jnp.clip(loss,0,self.max_fitness)
+        loss = jnp.minimum(loss,self.max_fitness*jnp.ones_like(loss))
 
         updates, states = jax.vmap(self.optimiser.update)(gradients, states, candidates[...,3]) #Compute updates parallely
         new_candidates = candidates.at[...,3:].set(jax.vmap(lambda t, u: t + u)(candidates[...,3:], updates)) #Apply updates to coefficients parallely
@@ -700,7 +700,7 @@ class GeneticProgramming:
         nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
         fitness = jnp.where(nan_or_inf, jnp.ones(self.n_offspring + 1)*self.max_fitness, fitness)
             
-        fitness = jnp.clip(fitness,0,self.max_fitness)
+        fitness = jnp.minimum(fitness,self.max_fitness*jnp.ones_like(fitness))
 
         return (offspring[jnp.argmin(fitness)], data, key), jnp.min(fitness)
 
