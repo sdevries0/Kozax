@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./figures/logo.png" width="300">
+  <img src="figures/logo.png" width="300">
 </div>
 
 # Kozax: Flexible and Scalable Genetic Programming in JAX
@@ -68,4 +68,4 @@ for g in range(num_generations):
 strategy.print_pareto_front()
 ```
 
-There are additional [examples](./examples/) on how to use kozax on more complex problems.
+There are additional [examples](examples/) on how to use kozax on more complex problems.
