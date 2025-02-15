@@ -1,7 +1,7 @@
 """
 kozax: Genetic programming framework in JAX
 
-Copyright (c) 2024 
+Copyright (c) 2024 sdevries0
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -21,62 +21,210 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
+from jaxtyping import Array
+from typing import Tuple
 
 class LorenzAttractor(EnvironmentBase):
-    def __init__(self, process_noise, obs_noise, n_obs=3):
-        n_var = 3
-        super().__init__(process_noise, obs_noise, n_var, n_obs)
+    """
+    Lorenz Attractor environment for symbolic regression tasks.
 
-        self.init_mu = jnp.array([1,1,1])
-        self.init_sd = 1
+    Parameters
+    ----------
+    process_noise : float, optional
+        Standard deviation of the process noise. Default is 0.
+
+    Attributes
+    ----------
+    init_mu : :class:`jax.Array`
+        Mean of the initial state distribution.
+    init_sd : float
+        Standard deviation of the initial state distribution.
+    sigma : float
+        Parameter sigma of the Lorenz system.
+    rho : float
+        Parameter rho of the Lorenz system.
+    beta : float
+        Parameter beta of the Lorenz system.
+    V : :class:`jax.Array`
+        Process noise covariance matrix.
+
+    Methods
+    -------
+    sample_init_states(batch_size, key)
+        Samples initial states for the environment.
+    drift(t, state, args)
+        Computes the drift function for the environment.
+    diffusion(t, state, args)
+        Computes the diffusion function for the environment.
+    """
+
+    def __init__(self, process_noise: float = 0) -> None:
+        n_var = 3
+        super().__init__(n_var, process_noise)
+
+        self.init_mu = jnp.array([1, 1, 1])
+        self.init_sd = 0.1
 
         self.sigma = 10
         self.rho = 28
-        self.beta = 8/3
+        self.beta = 8 / 3
         self.V = self.process_noise * jnp.eye(self.n_var)
-        self.W = self.obs_noise * jnp.eye(self.n_obs)[:self.n_obs]
-        self.C = jnp.eye(self.n_var)[:self.n_obs]
 
-    def sample_init_states(self, batch_size, key):
-        return self.init_mu + self.init_sd*jrandom.normal(key, shape=(batch_size,3))
-        # return jnp.ones((batch_size, 3))
-    
-    def drift(self, t, state, args):
-        return jnp.array([self.sigma*(state[1]-state[0]), state[0]*(self.rho-state[2])-state[1], state[0]*state[1]-self.beta*state[2]])
+    def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Array:
+        """
+        Samples initial states for the environment.
 
-    def diffusion(self, t, state, args):
+        Parameters
+        ----------
+        batch_size : int
+            Number of initial states to sample.
+        key : :class:`jax.random.PRNGKey`
+            Random key for sampling.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Initial states.
+        """
+        return self.init_mu + self.init_sd * jrandom.normal(key, shape=(batch_size, 3))
+
+    def drift(self, t: float, state: Array, args: Tuple) -> Array:
+        """
+        Computes the drift function for the environment.
+
+        Parameters
+        ----------
+        t : float
+            Current time.
+        state : :class:`jax.Array`
+            Current state.
+        args : tuple
+            Additional arguments.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Drift.
+        """
+        return jnp.array([self.sigma * (state[1] - state[0]), state[0] * (self.rho - state[2]) - state[1], state[0] * state[1] - self.beta * state[2]])
+
+    def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
+        """
+        Computes the diffusion function for the environment.
+
+        Parameters
+        ----------
+        t : float
+            Current time.
+        state : :class:`jax.Array`
+            Current state.
+        args : tuple
+            Additional arguments.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Diffusion.
+        """
         return self.V
 
-    def terminate_event(self, state, **kwargs):
-        return False
-    
 class Lorenz96(EnvironmentBase):
-    def __init__(self, process_noise, obs_noise, n_dim = 3, n_obs=3):
+    """
+    Lorenz 96 environment for symbolic regression tasks.
+
+    Parameters
+    ----------
+    n_dim : int, optional
+        Number of dimensions. Default is 3.
+    process_noise : float, optional
+        Standard deviation of the process noise. Default is 0.
+
+    Attributes
+    ----------
+    F : float
+        Forcing term.
+    init_mu : :class:`jax.Array`
+        Mean of the initial state distribution.
+    init_sd : float
+        Standard deviation of the initial state distribution.
+    V : :class:`jax.Array`
+        Process noise covariance matrix.
+
+    Methods
+    -------
+    sample_init_states(batch_size, key)
+        Samples initial states for the environment.
+    drift(t, state, args)
+        Computes the drift function for the environment.
+    diffusion(t, state, args)
+        Computes the diffusion function for the environment.
+    """
+
+    def __init__(self, n_dim: int = 3, process_noise: float = 0) -> None:
         n_var = n_dim
-        super().__init__(process_noise, obs_noise, n_var, n_obs)
+        super().__init__(n_var, process_noise)
 
         self.F = 8
-        self.init_mu = jnp.ones(self.n_var)*self.F*0
-        self.init_sd = 1
-        
+        self.init_mu = jnp.ones(self.n_var) * self.F
+        self.init_sd = 0.1
 
         self.V = self.process_noise * jnp.eye(self.n_var)
-        self.W = self.obs_noise * jnp.eye(self.n_obs)[:self.n_obs]
-        self.C = jnp.eye(self.n_var)[:self.n_obs]
 
-    def sample_init_states(self, batch_size, key):
-        return self.init_mu + self.init_sd*jrandom.normal(key, shape=(batch_size,self.n_var))
-        # return jnp.ones((batch_size, 3))
-    
-    def sample_init_state2(self, ys, batch_size, key):
-        return ys[jrandom.choice(key, jnp.arange(ys.shape[0]), shape=(batch_size,), replace=False)]
-    
-    def drift(self, t, state, args):
+    def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Array:
+        """
+        Samples initial states for the environment.
+
+        Parameters
+        ----------
+        batch_size : int
+            Number of initial states to sample.
+        key : :class:`jax.random.PRNGKey`
+            Random key for sampling.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Initial states.
+        """
+        return self.init_mu + self.init_sd * jrandom.normal(key, shape=(batch_size, self.n_var))
+
+    def drift(self, t: float, state: Array, args: Tuple) -> Array:
+        """
+        Computes the drift function for the environment.
+
+        Parameters
+        ----------
+        t : float
+            Current time.
+        state : :class:`jax.Array`
+            Current state.
+        args : tuple
+            Additional arguments.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Drift.
+        """
         f = lambda x_cur, x_next, x_prev1, x_prev2: (x_next - x_prev2) * x_prev1 - x_cur + self.F
         return jax.vmap(f)(state, jnp.roll(state, -1), jnp.roll(state, 1), jnp.roll(state, 2))
 
-    def diffusion(self, t, state, args):
-        return self.V
+    def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
+        """
+        Computes the diffusion function for the environment.
 
-    def terminate_event(self, state, **kwargs):
-        return False
+        Parameters
+        ----------
+        t : float
+            Current time.
+        state : :class:`jax.Array`
+            Current state.
+        args : tuple
+            Additional arguments.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Diffusion.
+        """
+        return self.V

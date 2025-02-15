@@ -1,7 +1,7 @@
 """
 kozax: Genetic programming framework in JAX
 
-Copyright (c) 2024 
+Copyright (c) 2024 sdevries0
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -39,44 +39,43 @@ def force_bitcast_convert_type(val, new_type=jnp.int32):
     return jax.lax.bitcast_convert_type(val, new_type)
 
 class EnvironmentBase(abc.ABC):
-    def __init__(self, process_noise, obs_noise, n_var, n_control, n_dim, n_obs):
+    def __init__(self, process_noise, obs_noise, n_var, n_control_inputs, n_dim, n_obs):
         self.process_noise = process_noise
         self.obs_noise = obs_noise
         self.n_var = n_var
-        self.n_control = n_control
+        self.n_control_inputs = n_control_inputs
         self.n_dim = n_dim
         self.n_obs = n_obs
 
     @abc.abstractmethod
     def initialize_parameters(self, params, ts):
-        return
+        raise NotImplementedError
 
     @abc.abstractmethod
     def sample_init_states(self, batch_size, key):
-        return
+        raise NotImplementedError
 
     @abc.abstractmethod
     def sample_params(self, batch_size, mode, ts, key):
-        return
+        raise NotImplementedError
 
     def f_obs(self, key, t_x):
         t, x = t_x
         new_key = jrandom.fold_in(key, force_bitcast_convert_type(t))
-        # print(self.C.shape, x.shape)
         out = self.C@x + jrandom.normal(new_key, shape=(self.n_obs,))@self.W
         return key, out
     
     @abc.abstractmethod
     def drift(self, t, state, args):
-        return
+        raise NotImplementedError
 
     @abc.abstractmethod
     def diffusion(self, t, state, args):
-        return
+        raise NotImplementedError
 
     @abc.abstractmethod
     def fitness_function(self, state, control, target, ts):
-        return
+        raise NotImplementedError
 
     def terminate_event(self, state, **kwargs):
         return False

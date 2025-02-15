@@ -1,7 +1,7 @@
 """
 kozax: Genetic programming framework in JAX
 
-Copyright (c) 2024 
+Copyright (c) 2024 sdevries0
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -17,51 +17,111 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
+from jax.random import PRNGKey
 import abc
-
-_itemsize_kind_type = {
-    (1, "i"): jnp.int8,
-    (2, "i"): jnp.int16,
-    (4, "i"): jnp.int32,
-    (8, "i"): jnp.int64,
-    (2, "f"): jnp.float16,
-    (4, "f"): jnp.float32,
-    (8, "f"): jnp.float64,
-}
-
-def force_bitcast_convert_type(val, new_type=jnp.int32):
-    val = jnp.asarray(val)
-    intermediate_type = _itemsize_kind_type[new_type.dtype.itemsize, val.dtype.kind]
-    val = val.astype(intermediate_type)
-    return jax.lax.bitcast_convert_type(val, new_type)
+from typing import Tuple, Any
+from jaxtyping import Array
 
 class EnvironmentBase(abc.ABC):
-    def __init__(self, process_noise, obs_noise, n_var, n_obs):
-        self.process_noise = process_noise
-        self.obs_noise = obs_noise
+    """
+    Abstract base class for time series environments in symbolic regression tasks.
+
+    Parameters
+    ----------
+    n_var : int
+        Number of variables in the state.
+
+    Methods
+    -------
+    sample_init_states(batch_size, key)
+        Samples initial states for the environment.
+    drift(t, state, args)
+        Computes the drift function for the environment.
+    diffusion(t, state, args)
+        Computes the diffusion function for the environment.
+    terminate_event(state, **kwargs)
+        Checks if the termination condition is met.
+    """
+
+    def __init__(self, n_var: int, process_noise: float) -> None:
         self.n_var = n_var
-        self.n_obs = n_obs
+        self.process_noise = process_noise
 
     @abc.abstractmethod
-    def sample_init_states(self, batch_size, key):
-        return
+    def sample_init_states(self, batch_size: int, key: PRNGKey) -> Any:
+        """
+        Samples initial states for the environment.
 
-    def f_obs(self, key, t_x):
-        t, x = t_x
-        new_key = jrandom.fold_in(key, force_bitcast_convert_type(t))
-        out = self.C@x + jrandom.normal(new_key, shape=(self.n_obs,))@self.W
-        return key, out
+        Parameters
+        ----------
+        batch_size : int
+            Number of initial states to sample.
+        key : :class:`jax.random.PRNGKey`
+            Random key for sampling.
+
+        Returns
+        -------
+        Any
+            Initial states.
+        """
+        raise NotImplementedError
     
     @abc.abstractmethod
-    def drift(self, t, state, args):
-        return
+    def drift(self, t: float, state: Array, args: Tuple) -> Array:
+        """
+        Computes the drift function for the environment.
+
+        Parameters
+        ----------
+        t : float
+            Current time.
+        state : :class:`jax.Array`
+            Current state.
+        args : tuple
+            Additional arguments.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Drift.
+        """
+        raise NotImplementedError
 
     @abc.abstractmethod
-    def diffusion(self, t, state, args):
-        return
+    def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
+        """
+        Computes the diffusion function for the environment.
 
-    def terminate_event(self, state, **kwargs):
+        Parameters
+        ----------
+        t : float
+            Current time.
+        state : :class:`jax.Array`
+            Current state.
+        args : tuple
+            Additional arguments.
+
+        Returns
+        -------
+        :class:`jax.Array`
+            Diffusion.
+        """
+        raise NotImplementedError
+
+    def terminate_event(self, state: Array, **kwargs) -> bool:
+        """
+        Checks if the termination condition is met.
+
+        Parameters
+        ----------
+        state : :class:`jax.Array`
+            Current state.
+        kwargs : dict
+            Additional arguments.
+
+        Returns
+        -------
+        bool
+            True if the termination condition is met, False otherwise.
+        """
         return False

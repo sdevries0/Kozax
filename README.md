@@ -3,7 +3,7 @@
 </div>
 
 # Kozax: Flexible and Scalable Genetic Programming in JAX
-Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, just-in-time compilation provides massive speedups for evolving offspring.
+Kozax introduces a general framework for evolving computer programs with genetic programming in JAX. With JAX, the computer programs can be vectorized and evaluated on parallel on CPU and GPU. Furthermore, just-in-time compilation provides massive speedups for evolving offspring. Check out the [paper](https://arxiv.org/abs/2502.03047) here.
 
 # Features
 Kozax allows the user to:
@@ -25,19 +25,24 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-key = jr.PRNGKey(0)
-key, data_key, init_key = jr.split(key, 3)
+key = jr.PRNGKey(0) #Initialize key
+data_key, gp_key = jr.split(key) #Split key for data and genetic programming
 x = jr.uniform(data_key, shape=(30,), minval=-5, maxval = 5) #Inputs
 y = -0.1*x**3 + 0.3*x**2 + 1.5*x #Targets
 ```
 
-Now we have to define a fitness function. This allows for much freedom, because you can use the computer program anyway you want to during evaluation. The fitness function should have a `__call__` method that receives a candidate, the data and a function that is necessary to evaluate the tree.
+Now we have to define a fitness function. This allows for much freedom, because you can use the computer program anyway you want to during evaluation. 
 ```python
-class FitnessFunction:
+from kozax.fitness_functions.base_fitness_function import BaseFitnessFunction
+
+class FitnessFunction(BaseFitnessFunction):
+  """
+  The fitness function inherits the class BaseFitnessFunction and should implement the __call__ function, with the candidate, data and tree_evaluator as inputs. The tree_evaluator is used to compute the value of the candidate for each input. jax.vmap is used to vectorize the evaluation of the candidate over the inputs. The candidate's predictions are used to compute the fitness value with the mean squared error.
+  """
     def __call__(self, candidate, data, tree_evaluator):
-        _X, _Y = data
-        pred = jax.vmap(tree_evaluator, in_axes=[None, 0])(candidate, _X)
-        return jnp.mean(jnp.square(pred-_Y)) #Mean squared error
+      X, Y = data
+      predictions = jax.vmap(tree_evaluator, in_axes=[None, 0])(candidate, X)
+      return jnp.mean(jnp.square(predictions-Y))
 
 fitness_function = FitnessFunction()
 ```
@@ -50,22 +55,11 @@ from kozax.genetic_programming import GeneticProgramming
 population_size = 500
 num_generations = 100
 
+#Initialize genetic programming strategy
 strategy = GeneticProgramming(num_generations, population_size, fitness_function)
 
-#Sample initial population
-population = strategy.initialize_population(init_key)
-
-for g in range(num_generations):
-    key, eval_key, sample_key = jr.split(key, 3)
-
-    #Compute the fitness of the population
-    fitness, population = strategy.evaluate_population(population, (x[:,None], y[:,None]), eval_key)
-
-    if g < (num_generations-1):
-        #Evolve a new population
-        population = strategy.evolve(population, fitness, sample_key)
-
-strategy.print_pareto_front()
+#Fit the strategy on the data. With verbose, we can print the intermediate solutions.
+strategy.fit(gp_key, (x, y), verbose = True)
 ```
 
 There are additional [examples](examples/) on how to use kozax on more complex problems.
