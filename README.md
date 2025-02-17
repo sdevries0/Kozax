@@ -64,6 +64,13 @@ strategy.fit(gp_key, (x, y), verbose = True)
 
 There are additional [examples](https://github.com/sdevries0/kozax/tree/main/examples) on how to use kozax on more complex problems.
 
+|Example|Notebook|Script|
+|---|---|---|
+|Symbolic regression of a dynamical system|[Notebook](../examples/example_notebooks/symbolic_regression_dynamical_system.ipynb)|[Script](../examples/example_notebooks/symbolic_regression_dynamical_system.py)|
+|Control policy optimization in Gymnax environment|[Notebook](../examples/example_notebooks/control_policy_optimization.ipynb)|[Script](../examples/example_notebooks/control_policy_optimization.py)|
+|Control policy optimization with dynamic memory|[Notebook](../examples/example_notebooks/control_policy_optimization_with_memory.ipynb)|[Script](../examples/example_notebooks/control_policy_optimization_with_memory.py)|
+|Optimization of a loss function to train a neural network|[Notebook](../examples/example_notebooks/objective_function_optimization.ipynb)|[Script](../examples/example_notebooks/objective_function_optimization.py)|
+
 
 # Citation
 If you make use of this code in your research paper, please cite:
