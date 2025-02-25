@@ -37,7 +37,7 @@ from kozax.fitness_functions.base_fitness_function import BaseFitnessFunction
 
 class FitnessFunction(BaseFitnessFunction):
   """
-  The fitness function inherits the class BaseFitnessFunction and should implement the __call__ function, with the candidate, data and tree_evaluator as inputs. The tree_evaluator is used to compute the value of the candidate for each input. jax.vmap is used to vectorize the evaluation of the candidate over the inputs. The candidate's predictions are used to compute the fitness value with the mean squared error.
+    The fitness function inherits the class BaseFitnessFunction and should implement the __call__ function, with the candidate, data and tree_evaluator as inputs. The tree_evaluator is used to compute the value of the candidate for each input. jax.vmap is used to vectorize the evaluation of the candidate over the inputs. The candidate's predictions are used to compute the fitness value with the mean squared error.
   """
   def __call__(self, candidate, data, tree_evaluator):
     X, Y = data
