@@ -3,18 +3,7 @@ kozax: Genetic programming framework in JAX
 
 Copyright (c) 2024 sdevries0
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+This work is licensed under the Creative Commons Attribution-NonCommercial-NoDerivs 4.0 International License.
 """
 
 import jax
@@ -386,7 +375,7 @@ class GeneticProgramming:
             
         if variable_list is None:
             assert len(self.layer_sizes) == 1, "If more than one type of tree are optimized, you have to specify the input variables"
-            variable_list = [["x" + str(i) for i in range(self.layer_sizes[0])] for _ in range(self.layer_sizes[0])]
+            variable_list = [["x" + str(i) for i in range(self.layer_sizes[0])]]
 
         n_operands = [0, 0] #Add 0 for empty node and constant node
         index = 2

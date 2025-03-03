@@ -3,18 +3,7 @@ kozax: Genetic programming framework in JAX
 
 Copyright (c) 2024 sdevries0
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+This work is licensed under the Creative Commons Attribution-NonCommercial-NoDerivs 4.0 International License.
 """
 
 import jax
@@ -74,11 +63,11 @@ class Acrobot(EnvironmentBase):
 
     def __init__(self, process_noise: float = 0.0, obs_noise: float = 0.0, n_obs: int = 4) -> None:
         self.n_var = 4
-        self.n_control = 1
+        self.n_control_inputs = 1
         self.n_targets = 0
         self.n_dim = 1
         self.init_bounds = jnp.array([0.1, 0.1, 0.1, 0.1])
-        super().__init__(process_noise, obs_noise, self.n_var, self.n_control, self.n_dim, n_obs)
+        super().__init__(process_noise, obs_noise, self.n_var, self.n_control_inputs, self.n_dim, n_obs)
 
         self.R = 0.1 * jnp.eye(self.n_control)
 
