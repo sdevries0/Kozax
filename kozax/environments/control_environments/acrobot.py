@@ -30,7 +30,7 @@ class Acrobot(EnvironmentBase):
     ----------
     n_var : int
         Number of variables in the state.
-    n_control : int
+    n_control_inputs : int
         Number of control inputs.
     n_targets : int
         Number of targets.
@@ -195,7 +195,7 @@ class Acrobot(EnvironmentBase):
         phi1 = -self.m2 * self.l1 * self.lc2 * theta2_dot**2 * jnp.sin(theta2) - 2 * self.m2 * self.l1 * self.lc2 * theta1_dot * theta2_dot * jnp.sin(theta1) \
                     + (self.m1 * self.lc1 + self.m2 * self.l1) * self.g * jnp.cos(theta1 - jnp.pi/2) + phi2
         
-        if self.n_control == 1:
+        if self.n_control_inputs == 1:
             theta2_acc = (control + d2/d1 * phi1 - self.m2 * self.l1 * self.lc2 * theta1_dot**2 * jnp.sin(theta2) - phi2) \
                         / (self.m2 * self.lc2**2 + self.moi2 - d2**2 / d1)
             theta1_acc = -(d2 * theta2_acc + phi1)/d1

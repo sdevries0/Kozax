@@ -81,8 +81,8 @@ if __name__ == "__main__":
     fitness_function = ODEFitnessFunction(solver=diffrax.Dopri5(), dt0 = 0.01, stepsize_controller=diffrax.PIDController(atol=1e-6, rtol=1e-6, dtmin=0.001), max_steps=300)
 
     strategy = GeneticProgramming(num_generations, population_size, fitness_function, operator_list, variable_list, layer_sizes, num_populations = num_populations,
-                            size_parsimony=0.003, constant_optimization_method="evolution", constant_optimization_N_offspring = 25, constant_optimization_steps = 5, 
-                            optimize_constants_elite=100, constant_step_size_init=0.1, constant_step_size_decay=0.99)
+                        size_parsimony=0.003, constant_optimization_method="evolution", constant_optimization_N_offspring = 25, constant_optimization_steps = 5, 
+                        optimize_constants_elite=100, constant_step_size_init=0.1, constant_step_size_decay=0.99)
     """
     Kozax provides a fit function that receives the data and a random key. However, it is also possible to run Kozax with an easy loop consisting of evaluating and evolving. 
     This is useful as different input data can be provided during evaluation. In symbolic regression of dynamical systems, it helps to first optimize on a small part of the time points, 
@@ -123,7 +123,7 @@ if __name__ == "__main__":
 
     strategy = GeneticProgramming(num_generations, population_size, fitness_function, operator_list, variable_list, layer_sizes, num_populations = num_populations,
                         size_parsimony=0.003, constant_optimization_method="gradient", constant_optimization_steps = 15, optimizer_class = optax.adam,
-                        optimize_constants_elite=100, constant_step_size_init=0.01, constant_step_size_decay=0.99)
+                        optimize_constants_elite=100, constant_step_size_init=0.025, constant_step_size_decay=0.95)
 
     key = jr.PRNGKey(0)
     data_key, gp_key = jr.split(key)

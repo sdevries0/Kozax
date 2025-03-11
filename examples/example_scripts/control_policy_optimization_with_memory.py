@@ -69,7 +69,7 @@ class Evaluator:
         self.max_fitness = 1e4
         self.state_size = state_size
         self.obs_size = env.n_obs
-        self.control_size = env.n_control
+        self.control_size = env.n_control_inputs
         self.latent_size = env.n_var*env.n_dim
         self.dt0 = dt0
         self.solver = solver
@@ -191,7 +191,7 @@ if __name__ == "__main__":
 
     variable_list = [["x" + str(i) for i in range(env.n_obs)] + ["a1", "a2", "u"], ["a1", "a2"]]
 
-    layer_sizes = jnp.array([state_size, env.n_control])
+    layer_sizes = jnp.array([state_size, env.n_control_inputs])
 
     #Define evaluator
     fitness_function = Evaluator(env, state_size, 0.05, solver=diffrax.Dopri5(), stepsize_controller=diffrax.PIDController(atol=1e-4, rtol=1e-4, dtmin=0.001), max_steps=1000)
