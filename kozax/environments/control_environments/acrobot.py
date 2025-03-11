@@ -69,7 +69,7 @@ class Acrobot(EnvironmentBase):
         self.init_bounds = jnp.array([0.1, 0.1, 0.1, 0.1])
         super().__init__(process_noise, obs_noise, self.n_var, self.n_control_inputs, self.n_dim, n_obs)
 
-        self.R = 0.1 * jnp.eye(self.n_control)
+        self.R = 0.1 * jnp.eye(self.n_control_inputs)
 
     def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Tuple[Array, Array]:
         """
