@@ -272,7 +272,7 @@ class GeneticProgramming:
         self.vmap_gradients = jax.vmap(jax.value_and_grad(self.partial_fitness_function), in_axes=[0, 0, None])
 
         assert device_type in ["cpu", "gpu", "tpu"], "The device type is not supported"
-        devices = mesh_utils.create_device_mesh((len(jax.devices(device_type))))
+        devices = mesh_utils.create_device_mesh((len(jax.devices(device_type)),))
         self.mesh = Mesh(devices, axis_names=('i'))
         self.data_mesh = NamedSharding(self.mesh, P())
         
