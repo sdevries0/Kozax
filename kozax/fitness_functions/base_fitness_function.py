@@ -21,7 +21,7 @@ class BaseFitnessFunction(ABC):
     """
 
     @abstractmethod
-    def __call__(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> float:
+    def get_fitness(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> float:
         """
         Evaluates the candidate on a task.
 
@@ -38,5 +38,26 @@ class BaseFitnessFunction(ABC):
         -------
         float
             Fitness of the candidate.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def predict(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> Tuple:
+        """
+        Predicts the output of the candidate on a task.
+
+        Parameters
+        ----------
+        candidate : :class:`jax.Array`
+            The candidate solution to be evaluated.
+        data : :class:`tuple`
+            The data required to evaluate the candidate.
+        tree_evaluator : :class:`Callable`
+            Function for evaluating trees.
+
+        Returns
+        -------
+        tuple
+            Predicted output of the candidate.
         """
         raise NotImplementedError

@@ -61,7 +61,7 @@ class ODEFitnessFunction(BaseFitnessFunction):
         self.stepsize_controller = stepsize_controller
         self.max_steps = max_steps
 
-    def __call__(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> float:
+    def get_fitness(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> float:
         """
         Evaluates the candidate on a task.
 
@@ -80,10 +80,32 @@ class ODEFitnessFunction(BaseFitnessFunction):
             Fitness of the candidate.
         """
         x0, ts, ys = data
-        fitness = jax.vmap(self.evaluate_time_series, in_axes=[None, 0, None, 0, None])(candidate, x0, ts, ys, tree_evaluator)
+        fitness, _ = jax.vmap(self.evaluate_time_series, in_axes=[None, 0, None, 0, None])(candidate, x0, ts, ys, tree_evaluator)
         return jnp.mean(fitness)
     
-    def evaluate_time_series(self, candidate: Array, x0: Array, ts: Array, ys: Array, tree_evaluator: Callable) -> float:
+    def predict(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> Array:
+        """
+        Predicts the output of the candidate on a task.
+        
+        Parameters
+        ----------
+        candidate : :class:`jax.Array`
+            The candidate solution to be evaluated.
+        data : :class:`tuple` of :class:`jax.Array`
+            The data required to evaluate the candidate. Tuple of (x, y) where x is the input data and y is the true output data.
+        tree_evaluator : :class:`Callable`
+            Function for evaluating trees.
+            
+        Returns
+        -------
+        :class:`jax.Array`
+            Predicted output of the candidate.
+        """
+        x0, ts, ys = data
+        _, pred = jax.vmap(self.evaluate_time_series, in_axes=[None, 0, None, 0, None])(candidate, x0, ts, ys, tree_evaluator)
+        return pred
+    
+    def evaluate_time_series(self, candidate: Array, x0: Array, ts: Array, ys: Array, tree_evaluator: Callable) -> Tuple[float, Array]:
         """
         Integrate the candidate as a differential equation and compute the fitness given the predictions.
 
@@ -112,7 +134,7 @@ class ODEFitnessFunction(BaseFitnessFunction):
         )
         pred_ys = sol.ys
         fitness = self.MSE(pred_ys, ys)
-        return fitness
+        return fitness, pred_ys
     
     def drift(self, t: float, x: Array, args: Tuple) -> Array:
         """

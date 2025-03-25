@@ -77,6 +77,8 @@ class StirredTankReactor(EnvironmentBase):
     """
 
     def __init__(self, process_noise: float = 0.0, obs_noise: float = 0.0, n_obs: int = 3, n_targets: int = 1, max_control: Array = jnp.array([300]), external_f: callable = lambda t: 0.0) -> None:
+        if type(process_noise) == float:
+            process_noise = [process_noise, process_noise]
         self.process_noise = process_noise
         self.obs_noise = obs_noise
         self.n_var = 3
@@ -299,6 +301,8 @@ class StirredTankReactor(EnvironmentBase):
             Fitness value.
         """
         x_d = jax.vmap(lambda tar: jnp.array([0, tar, 0]))(targets)
+        # x_d = jnp.array([0, targets[0], 0])
+        print(state.shape, control.shape, x_d.shape)
         costs = jax.vmap(lambda _state, _u, _x_d: (_state - _x_d).T @ self.Q @ (_state - _x_d) + (_u) @ self.r @ (_u))(state, control, x_d)
         return jnp.sum(costs)
 

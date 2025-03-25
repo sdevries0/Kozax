@@ -22,7 +22,7 @@ class SymbolicRegressionFitnessFunction(BaseFitnessFunction):
         Evaluates the candidate on a task.
     """
 
-    def __call__(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> float:
+    def get_fitness(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> float:
         """
         Evaluates the candidate on a task.
 
@@ -41,5 +41,27 @@ class SymbolicRegressionFitnessFunction(BaseFitnessFunction):
             Fitness of the candidate.
         """
         x, y = data
-        pred = jax.vmap(tree_evaluator, in_axes=[None, 0])(candidate, x)
+        pred = self.predict(candidate, data, tree_evaluator)
         return jnp.mean(jnp.square(pred - y))
+    
+    def predict(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> Array:
+        """
+        Predicts the output of the candidate on a task.
+        
+        Parameters
+        ----------
+        candidate : :class:`jax.Array`
+            The candidate solution to be evaluated.
+        data : :class:`tuple` of :class:`jax.Array`
+            The data required to evaluate the candidate. Tuple of (x, y) where x is the input data and y is the true output data.
+        tree_evaluator : :class:`Callable`
+            Function for evaluating trees.
+            
+        Returns
+        -------
+        :class:`jax.Array`
+            Predicted output of the candidate.
+        """
+        x, y = data
+        pred = jax.vmap(tree_evaluator, in_axes=[None, 0])(candidate, x)
+        return pred

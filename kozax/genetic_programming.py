@@ -19,6 +19,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
 import sympy
+from sklearn.base import BaseEstimator, RegressorMixin
 
 from typing import Tuple, Callable
 import time
@@ -40,17 +41,19 @@ def lambda_operator_arity2(f):
 def lambda_leaf(i):
     return lambda x, y, _data: _data[i]
 
-class GeneticProgramming:
+class GeneticProgramming(BaseEstimator):
     """Genetic programming strategy of symbolic expressions.
 
     Parameters
     ----------
+    fitness_function : Callable
+        Function that evaluates a candidate and assigns a fitness.
+    key : PRNGKey
+        Random key.
     num_generations : int
         The number of generations over which to evolve the population.
     population_size : int
         Number of candidates in the population.
-    fitness_function : Callable
-        Function that evaluates a candidate and assigns a fitness.
     operator_list : list, optional
         List of operators that can be included in the trees.
     variable_list : list, optional
@@ -105,12 +108,20 @@ class GeneticProgramming:
         The mutation probability for each subpopulation.
     sample_probability_factors : Tuple[float], optional
         The probability to sample a new candidate for each subpopulation.
+    verbose : bool, optional
+        Whether to print the best fitness and solution at each generation.
+    save_pareto_front : bool, optional
+        Whether to save the Pareto front to a file.
+    save_path : str, optional
+        Name of the file to save the Pareto front.
     """
 
     def __init__(self, 
-                 num_generations: int, 
-                 population_size: int, 
                  fitness_function: Callable, 
+                 key: jr.PRNGKey,
+                 *,
+                 num_generations: int = 50, 
+                 population_size: int = 100, 
                  operator_list: list = None,
                  variable_list: list = None,
                  layer_sizes: Array = jnp.array([1]),
@@ -137,70 +148,99 @@ class GeneticProgramming:
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
-                 sample_probability_factors: float | Tuple[float] = (0.0, 0.0)) -> None:
+                 sample_probability_factors: float | Tuple[float] = (0.0, 0.0),
+                 verbose: bool = False, 
+                 save_pareto_front: bool = False, 
+                 save_path: str = None) -> None:
         
-        self.layer_sizes = layer_sizes
-        assert num_populations > 0, "The number of populations should be larger than 0"
-        self.num_populations = num_populations
-        assert population_size > 0 and population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
+        self.fitness_function = fitness_function
+        self.key = key
+        self.num_generations = num_generations
         self.population_size = population_size
-        assert max_init_depth > 0, "The max initial depth should be larger than 0"
+        self.operator_list = operator_list
+        self.variable_list = variable_list
+        self.layer_sizes = layer_sizes
+        self.num_populations = num_populations
         self.max_init_depth = max_init_depth
-        assert max_nodes > 0, "The max number of nodes should be larger than 0"
         self.max_nodes = max_nodes
+        self.device_type = device_type
+        self.tournament_size = tournament_size
+        self.size_parsimony = size_parsimony
+        self.constant_sd = constant_sd
+        self.migration_period = migration_period
+        self.migration_size = migration_size
+        self.elite_size = elite_size
+        self.constant_optimization_method = constant_optimization_method
+        self.constant_optimization_N_offspring = constant_optimization_N_offspring
+        self.constant_optimization_steps = constant_optimization_steps
+        self.start_constant_optimization = start_constant_optimization
+        self.optimize_constants_elite = optimize_constants_elite
+        self.optimizer_class = optimizer_class
+        self.constant_step_size_init = constant_step_size_init
+        self.constant_step_size_decay = constant_step_size_decay
+        self.max_fitness = max_fitness
+        self.selection_pressure_factors = selection_pressure_factors
+        self.reproduction_probability_factors = reproduction_probability_factors
+        self.crossover_probability_factors = crossover_probability_factors
+        self.mutation_probability_factors = mutation_probability_factors
+        self.sample_probability_factors = sample_probability_factors
+        self.verbose = verbose
+        self.save_pareto_front = save_pareto_front
+        self.save_path = save_path
+
+    def setup(self) -> None:
+        """
+        Sets up the genetic programming algorithm.
+        """
+        
+        assert self.num_populations > 0, "The number of populations should be larger than 0"
+        assert self.population_size > 0 and self.population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
+        assert self.max_init_depth > 0, "The max initial depth should be larger than 0"
+        assert self.max_nodes > 0, "The max number of nodes should be larger than 0"
         self.num_trees = jnp.sum(self.layer_sizes)
         assert self.num_trees > 0, "The number of trees should be larger than 0"
 
-        assert num_generations > 0, "The number of generations should be larger than 0"
-        self.num_generations = num_generations
+        assert self.num_generations > 0, "The number of generations should be larger than 0"
 
-        assert size_parsimony >= 0, "The size parsimony can not be negative"
-        self.size_parsimony = size_parsimony
-        assert constant_sd > 0, "The standard deviation of the constants should be larger than 0"
-        self.constant_sd = constant_sd
+        assert self.size_parsimony >= 0, "The size parsimony can not be negative"
+        assert self.constant_sd > 0, "The standard deviation of the constants should be larger than 0"
 
-        assert migration_period > 1, "The migration period should be larger than 1"
-        self.migration_period = migration_period
-        assert isinstance(migration_size, int), "The migration size should be an integer"
-        self.migration_size = migration_size
+        assert self.migration_period > 1, "The migration period should be larger than 1"
+        assert isinstance(self.migration_size, int), "The migration size should be an integer"
 
-        assert tournament_size > 1, "The tournament size should be larger than 1"
-        self.tournament_size = tournament_size
+        assert self.tournament_size > 1, "The tournament size should be larger than 1"
         
         # Initialize the reproduction hyperparameters for each population
-        if isinstance(selection_pressure_factors, float):
-            selection_pressure_factors = (selection_pressure_factors, selection_pressure_factors)
-        assert (selection_pressure_factors[0] > 0) & (selection_pressure_factors[1] > 0), "The selection pressure should be larger than 0"
+        if isinstance(self.selection_pressure_factors, float):
+            self.selection_pressure_factors = (self.selection_pressure_factors, self.selection_pressure_factors)
+        assert (self.selection_pressure_factors[0] > 0) & (self.selection_pressure_factors[1] > 0), "The selection pressure should be larger than 0"
 
-        self.selection_pressures = jnp.linspace(*selection_pressure_factors, self.num_populations)
+        self.selection_pressures = jnp.linspace(*self.selection_pressure_factors, self.num_populations)
         self.tournament_probabilities = jnp.array([sp * (1 - sp) ** jnp.arange(self.tournament_size) for sp in self.selection_pressures])
         
-        if isinstance(crossover_probability_factors, float):
-            crossover_probability_factors = (crossover_probability_factors, crossover_probability_factors)
-        assert (crossover_probability_factors[0] >= 0) & (crossover_probability_factors[1] >= 0), "The crossover probability should not be negative"
+        if isinstance(self.crossover_probability_factors, float):
+            self.crossover_probability_factors = (self.crossover_probability_factors, self.crossover_probability_factors)
+        assert (self.crossover_probability_factors[0] >= 0) & (self.crossover_probability_factors[1] >= 0), "The crossover probability should not be negative"
 
-        if isinstance(mutation_probability_factors, float):
-            mutation_probability_factors = (mutation_probability_factors, mutation_probability_factors)
-        assert (mutation_probability_factors[0] >= 0) & (mutation_probability_factors[1] >= 0), "The mutation probability should not be negative"
+        if isinstance(self.mutation_probability_factors, float):
+            self.mutation_probability_factors = (self.mutation_probability_factors, self.mutation_probability_factors)
+        assert (self.mutation_probability_factors[0] >= 0) & (self.mutation_probability_factors[1] >= 0), "The mutation probability should not be negative"
 
-        if isinstance(sample_probability_factors, float):
-            sample_probability_factors = (sample_probability_factors, sample_probability_factors)
-        assert (sample_probability_factors[0] >= 0) & (sample_probability_factors[1] >= 0), "The sample probability should not be negative"
+        if isinstance(self.sample_probability_factors, float):
+            self.sample_probability_factors = (self.sample_probability_factors, self.sample_probability_factors)
+        assert (self.sample_probability_factors[0] >= 0) & (self.sample_probability_factors[1] >= 0), "The sample probability should not be negative"
 
-        self.reproduction_type_probabilities = jnp.vstack([jnp.linspace(*crossover_probability_factors, self.num_populations),
-                                                           jnp.linspace(*mutation_probability_factors, self.num_populations),
-                                                           jnp.linspace(*sample_probability_factors, self.num_populations)]).T
+        self.reproduction_type_probabilities = jnp.vstack([jnp.linspace(*self.crossover_probability_factors, self.num_populations),
+                                                           jnp.linspace(*self.mutation_probability_factors, self.num_populations),
+                                                           jnp.linspace(*self.sample_probability_factors, self.num_populations)]).T
         
-        if isinstance(reproduction_probability_factors, float):
-            reproduction_probability_factors = (reproduction_probability_factors, reproduction_probability_factors)
-        assert (reproduction_probability_factors[0] > 0) & (reproduction_probability_factors[1] > 0), "The reproduction probability should be larger than 0"
+        if isinstance(self.reproduction_probability_factors, float):
+            self.reproduction_probability_factors = (self.reproduction_probability_factors, self.reproduction_probability_factors)
+        assert (self.reproduction_probability_factors[0] > 0) & (self.reproduction_probability_factors[1] > 0), "The reproduction probability should be larger than 0"
 
-        self.reproduction_probabilities = jnp.linspace(*reproduction_probability_factors, self.num_populations)
+        self.reproduction_probabilities = jnp.linspace(*self.reproduction_probability_factors, self.num_populations)
 
-        assert elite_size % 2 == 0, "The elite size should be a multiple of two"
-        self.elite_size = elite_size
-
-        self.max_fitness = max_fitness
+        assert self.elite_size % 2 == 0, "The elite size should be a multiple of two"
 
         self.max_complexity = self.num_trees * self.max_nodes
         self.complexities = jnp.arange(self.max_complexity)
@@ -213,7 +253,7 @@ class GeneticProgramming:
         self.empty_tree = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (self.max_nodes, 1))
         self.empty_candidate = jnp.tile(self.empty_tree, (self.num_trees, 1, 1))
 
-        self.initialize_node_library(operator_list, variable_list)
+        self.initialize_node_library(self.operator_list, self.variable_list)
 
         print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices]}.")
 
@@ -258,40 +298,34 @@ class GeneticProgramming:
                                                      elite_size=self.elite_size, 
                                                      tournament_size=self.tournament_size, 
                                                      num_trees=self.num_trees, 
-                                                     population_size=population_size),
+                                                     population_size=self.population_size),
                                                     in_axes=[0, 0, 0, 0, 0, 0, None]))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
         # Define partial fitness function for evaluation
         self.jit_evaluate_row_from_tree = partial(self.evaluate_row_from_tree, node_function_list=self.node_function_list)
-        self.partial_fitness_function = lambda constants, nodes, data: fitness_function(jnp.concatenate([nodes, constants], axis=-1), data, self.tree_evaluator)
+        self.partial_fitness_function = lambda constants, nodes, data: self.fitness_function.get_fitness(jnp.concatenate([nodes, constants], axis=-1), data, self.tree_evaluator)
+        self.partial_predict = lambda constants, nodes, data: self.fitness_function.predict(jnp.concatenate([nodes, constants], axis=-1), data, self.tree_evaluator)
 
         # Define parallel evaluation functions
         self.vmap_trees = jax.vmap(self.partial_fitness_function, in_axes=[0, 0, None])
         self.vmap_gradients = jax.vmap(jax.value_and_grad(self.partial_fitness_function), in_axes=[0, 0, None])
 
-        assert device_type in ["cpu", "gpu", "tpu"], "The device type is not supported"
-        devices = mesh_utils.create_device_mesh((len(jax.devices(device_type)),))
+        assert self.device_type in ["cpu", "gpu", "tpu"], "The device type is not supported"
+        devices = mesh_utils.create_device_mesh((len(jax.devices(self.device_type)),))
         self.mesh = Mesh(devices, axis_names=('i'))
         self.data_mesh = NamedSharding(self.mesh, P())
-        
-        # Define hyperparameters for constant optimization
-        self.constant_step_size_init = constant_step_size_init
-        self.constant_step_size_decay = constant_step_size_decay
-        self.optimize_constants_elite = optimize_constants_elite
-        self.start_constant_optimization = start_constant_optimization
-        self.optimizer_class = optimizer_class
 
-        assert constant_optimization_method in ["evolution", "gradient", None], "This optimization method is not implemented"
-        if constant_optimization_method == "evolution":
-            assert constant_optimization_N_offspring > 0, "The offspring size for constant optimization should be larger than 0"
-            self.constant_optimization_steps = constant_optimization_steps
-            self.optimize_constants_function = jax.vmap(partial(self.optimize_constants_with_evolution, n_iterations=constant_optimization_steps), in_axes=[0, None, 0])
-            self.n_offspring = constant_optimization_N_offspring
+        assert self.constant_optimization_method in ["evolution", "gradient", None], "This optimization method is not implemented"
+        if self.constant_optimization_method == "evolution":
+            assert self.constant_optimization_N_offspring > 0, "The offspring size for constant optimization should be larger than 0"
+            self.constant_optimization_steps = self.constant_optimization_steps
+            self.optimize_constants_function = jax.vmap(partial(self.optimize_constants_with_evolution, n_iterations=self.constant_optimization_steps), in_axes=[0, None, 0])
+            self.n_offspring = self.constant_optimization_N_offspring
             self.constant_optimization = True
-        elif constant_optimization_method == "gradient":
-            self.optimize_constants_function = partial(self.optimize_constants_with_gradients, n_epoch=constant_optimization_steps)
+        elif self.constant_optimization_method == "gradient":
+            self.optimize_constants_function = partial(self.optimize_constants_with_gradients, n_epoch=self.constant_optimization_steps)
             self.constant_optimization = True
             
         else:
@@ -451,7 +485,7 @@ class GeneticProgramming:
         self.node_function_list = node_function_list
         self.variable_array = variable_array
 
-    def fit(self, key: PRNGKey, data: Tuple, verbose = False, save_pareto_front = False, save_path = None) -> None:
+    def fit(self, X: Tuple, y=None) -> "GeneticProgramming":
         """
         Fits the genetic programming algorithm to the data.
 
@@ -468,24 +502,51 @@ class GeneticProgramming:
         save_path : str, optional
             Name of the file to save the Pareto front.
         """
-        key, init_key = jr.split(key)
+        key, init_key = jr.split(self.key)
 
-        self.reset()
+        self.setup()
 
         population = self.initialize_population(init_key)
+
+        if y is not None:
+            if isinstance(X, tuple):
+                data = X + (y,)
+            else:
+                data = (X, y)
+        else:
+            data = X
 
         for g in range(self.num_generations):
             key, eval_key, sample_key = jr.split(key, 3)
             fitness, population = self.evaluate_population(population, data, eval_key)
 
-            if verbose:
+            if self.verbose:
                 best_fitness, best_solution = self.get_statistics(g)
                 print(f"In generation {g+1}, best fitness = {best_fitness:.4f}, best solution = {self.expression_to_string(best_solution)}")
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
 
-        self.print_pareto_front(save_pareto_front, save_path)
+        self.print_pareto_front(self.save_pareto_front, self.save_path)
+        
+        return self
+
+    def predict(self, data: Tuple) -> Tuple:
+        """
+        Predicts the output of the best solution.
+
+        Parameters
+        ----------
+        data : Tuple
+            Data required for evaluation.
+
+        Returns
+        -------
+        Array
+            Predicted output.
+        """
+        best_solution = self.best_solutions[self.current_generation]
+        return self.partial_predict(best_solution[..., 3:], best_solution[..., :3], data)
 
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""

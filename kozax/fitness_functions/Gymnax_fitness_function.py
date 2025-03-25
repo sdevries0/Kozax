@@ -44,7 +44,7 @@ class GymFitnessFunction(BaseFitnessFunction):
         self.env, self.env_params = gymnax.make(env_name)
         self.num_steps = self.env_params.max_steps_in_episode
 
-    def __call__(self, candidate: Array, keys: Array, tree_evaluator: Callable) -> float:
+    def get_fitness(self, candidate: Array, keys: Array, tree_evaluator: Callable) -> float:
         """
         Evaluates the candidate on a task.
 
@@ -62,8 +62,29 @@ class GymFitnessFunction(BaseFitnessFunction):
         float
             Fitness of the candidate.
         """
-        reward = jax.vmap(self.evaluate_trajectory, in_axes=(None, 0, None))(candidate, keys, tree_evaluator)
+        reward, _, _, _, _ = jax.vmap(self.evaluate_trajectory, in_axes=(None, 0, None))(candidate, keys, tree_evaluator)
         return jnp.mean(reward)
+    
+    def predict(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> Array:
+        """
+        Predicts the output of the candidate on a task.
+        
+        Parameters
+        ----------
+        candidate : :class:`jax.Array`
+            The candidate solution to be evaluated.
+        data : :class:`tuple` of :class:`jax.Array`
+            The data required to evaluate the candidate. Tuple of (x, y) where x is the input data and y is the true output data.
+        tree_evaluator : :class:`Callable`
+            Function for evaluating trees.
+            
+        Returns
+        -------
+        :class:`jax.Array`
+            Predicted output of the candidate.
+        """
+        _, states, rewards, actions, dones = self.evaluate_trajectory(candidate, jr.PRNGKey(0), tree_evaluator)
+        return states, rewards, actions, dones
         
     def evaluate_trajectory(self, candidate: Array, key: jr.PRNGKey, tree_evaluator: Callable) -> Tuple[Array, float]:
         """
@@ -104,11 +125,11 @@ class GymFitnessFunction(BaseFitnessFunction):
                 subkey, env_state, action, self.env_params
             )
 
-            return (next_state, next_env_state, key), (state, reward, done)
+            return (next_state, next_env_state, key), (state, reward, action, done)
 
         # Run the rollout using lax.scan
-        (final_carry, (states, rewards, dones)) = jax.lax.scan(
+        (final_carry, (states, rewards, actions, dones)) = jax.lax.scan(
             step_fn, (state, env_state, key), None, length=self.num_steps
         )
         
-        return -jnp.sum(rewards)
+        return -jnp.sum(rewards), states, rewards, actions, dones
