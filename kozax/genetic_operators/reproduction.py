@@ -46,9 +46,8 @@ def evolve_trees(parent1: Array,
     return child0, child1
 
 def tournament_selection(population: Array, 
-                         fitness: Array, 
+                         metrics: Array, 
                          key: PRNGKey, 
-                         tournament_probabilities: Array, 
                          tournament_size: int, 
                          population_indices: Array) -> Array:
     """Selects a candidate for reproduction from a tournament.
@@ -76,11 +75,66 @@ def tournament_selection(population: Array,
     tournament_key, winner_key = jr.split(key)
     indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,))
 
-    index = jr.choice(winner_key, indices[jnp.argsort(fitness[indices])], p=tournament_probabilities)
-    return population[index]
+    tournament_metrics = metrics[indices]
+
+    tournament_metrics_i = jnp.expand_dims(tournament_metrics, axis=1)
+    tournament_metrics_j = jnp.expand_dims(tournament_metrics, axis=0)
+
+    j_better_or_equal = (tournament_metrics_j <= tournament_metrics_i)
+    j_strictly_better = (tournament_metrics_j < tournament_metrics_i)
+
+    j_dominates_i = jnp.all(j_better_or_equal, axis=2) & jnp.any(j_strictly_better, axis=2)
+    mask = ~jnp.eye(tournament_metrics.shape[0], dtype=bool)
+    j_dominates_i = j_dominates_i & mask
+
+    ranks = jnp.sum(j_dominates_i, axis=1) + 1
+    winner_index = jr.choice(winner_key, indices, p=1/ranks)
+
+    return population[winner_index]
+
+def identify_non_dominated(metrics: Array) -> Array:
+    """
+    Identifies non-dominated solutions in a set using vectorized operations.
+    
+    Parameters
+    ----------
+    metrics : Array
+        Array of shape (n_solutions, n_objectives) with metrics for each solution.
+        
+    Returns
+    -------
+    Array
+        Boolean mask identifying non-dominated solutions.
+    """
+    # For each solution i, check if it's dominated by any other solution j
+    
+    # Reshape metrics for broadcasting
+    # Shape: (n_solutions, 1, n_objectives)
+    metrics_i = jnp.expand_dims(metrics, axis=1)
+    
+    # Shape: (1, n_solutions, n_objectives)
+    metrics_j = jnp.expand_dims(metrics, axis=0)
+    
+    # Check if j dominates i: 
+    # 1. j is better or equal in all objectives
+    # 2. j is strictly better in at least one objective
+    j_better_or_equal = (metrics_j <= metrics_i)
+    j_strictly_better = (metrics_j < metrics_i)
+    
+    # For each pair (i,j), check if j dominates i
+    j_dominates_i = jnp.all(j_better_or_equal, axis=2) & jnp.any(j_strictly_better, axis=2)
+    
+    # Don't compare solutions with themselves
+    mask = ~jnp.eye(metrics.shape[0], dtype=bool)
+    j_dominates_i = j_dominates_i & mask
+    
+    # A solution is non-dominated if it's not dominated by any other solution
+    non_dominated = ~jnp.any(j_dominates_i, axis=1)
+    
+    return non_dominated
 
 def evolve_population(population: Array, 
-                      fitness: Array, 
+                      metrics: Array, 
                       key: PRNGKey, 
                       reproduction_type_probabilities: Array, 
                       reproduction_probability: float, 
@@ -89,7 +143,6 @@ def evolve_population(population: Array,
                       population_size: int, 
                       tournament_size: int, 
                       num_trees: int, 
-                      elite_size: int, 
                       reproduction_functions: List[Callable]) -> Array:
     """Reproduces pairs of candidates to obtain a new population.
 
@@ -126,39 +179,37 @@ def evolve_population(population: Array,
         Evolved population.
     """
     left_key, right_key, repro_key, evo_key = jr.split(key, 4)
-    elite = population[jnp.argsort(fitness)[:elite_size]]
+    non_dominated_indices = identify_non_dominated(metrics)
 
     # Sample parents for reproduction
-    left_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None, None])(population, 
-                                                                                             fitness, 
-                                                                                             jr.split(left_key, (population_size - elite_size)//2), 
-                                                                                             tournament_probabilities, 
+    left_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None])(population, 
+                                                                                             metrics, 
+                                                                                             jr.split(left_key, population_size//2), 
                                                                                              tournament_size, 
                                                                                              population_indices)
     
-    right_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None, None])(population, 
-                                                                                              fitness, 
-                                                                                              jr.split(right_key, (population_size - elite_size)//2), 
-                                                                                              tournament_probabilities, 
+    right_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None])(population, 
+                                                                                              metrics, 
+                                                                                              jr.split(right_key, population_size//2), 
                                                                                               tournament_size, 
                                                                                               population_indices)
     # Sample which reproduction function to apply to the parents
-    reproduction_type = jr.choice(repro_key, jnp.arange(3), shape=((population_size - elite_size)//2,), p=reproduction_type_probabilities)
+    reproduction_type = jr.choice(repro_key, jnp.arange(3), shape=(population_size//2,), p=reproduction_type_probabilities)
 
     left_children, right_children = jax.vmap(evolve_trees, in_axes=[0, 0, 0, 0, None, None])(left_parents, 
                                                                                              right_parents, 
-                                                                                             jr.split(evo_key, ((population_size - elite_size)//2, num_trees, 2)), 
+                                                                                             jr.split(evo_key, (population_size//2, num_trees, 2)), 
                                                                                              reproduction_type, 
                                                                                              reproduction_probability, 
                                                                                              reproduction_functions)
     
-    evolved_population = jnp.concatenate([elite, left_children, right_children], axis=0)
+    evolved_population = jnp.where(non_dominated_indices[:,None,None,None], population, jnp.concatenate([left_children, right_children], axis=0))
     return evolved_population
 
 def migrate_population(receiver: Array, 
                        sender: Array, 
-                       receiver_fitness: Array, 
-                       sender_fitness: Array, 
+                       receiver_metrics: Array, 
+                       sender_metrics: Array, 
                        migration_size: int, 
                        population_indices: Array) -> Tuple[Array, Array]:
     """Unfit candidates from one population are replaced with fit candidates from another population.
@@ -183,15 +234,18 @@ def migrate_population(receiver: Array,
     Tuple[Array, Array]
         Population after migration and their fitness.
     """
-    sorted_receiver = receiver[jnp.argsort(receiver_fitness, descending=True)]
-    sorted_sender = sender[jnp.argsort(sender_fitness, descending=False)]
-    migrated_population = jnp.where((population_indices < migration_size)[:,None,None,None], sorted_sender, sorted_receiver)
-    migrated_fitness = jnp.where(population_indices < migration_size, jnp.sort(sender_fitness, descending=False), jnp.sort(receiver_fitness, descending=True))
-    return migrated_population, migrated_fitness
+    # Identify the Pareto front of the sender population
+    sender_pareto_front = identify_non_dominated(sender_metrics)
+
+    # Replace the selected locations in the receiver with Pareto front individuals
+    migrated_population = jnp.where(sender_pareto_front[:,None,None,None], sender, receiver)
+    migrated_metrics = jnp.where(sender_pareto_front[:,None], sender_metrics, receiver_metrics)
+
+    return migrated_population, migrated_metrics
 
 def evolve_populations(jit_evolve_population: Callable, 
                        populations: Array, 
-                       fitness: Array, 
+                       metrics: Array, 
                        key: PRNGKey, 
                        current_generation: int, 
                        migration_period: int, 
@@ -233,18 +287,18 @@ def evolve_populations(jit_evolve_population: Callable,
     population_indices = jnp.arange(population_size)
 
     # Migrate candidates between populations. The populations and fitnesses are rolled for circular migration.
-    populations, fitness = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
+    populations, metrics = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
                                     jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, None, None]), 
                                     jax.vmap(lambda receiver, sender, receiver_fitness, sender_fitness, migration_size, population_indices: (receiver, receiver_fitness), in_axes=[0, 0, 0, 0, None, None]), 
                                         populations, 
                                         jnp.roll(populations, 1, axis=0), 
-                                        fitness, 
-                                        jnp.roll(fitness, 1, axis=0), 
+                                        metrics, 
+                                        jnp.roll(metrics, 1, axis=0), 
                                         migration_size, 
                                         population_indices)
     
     new_population = jit_evolve_population(populations, 
-                                        fitness, 
+                                        metrics, 
                                         jr.split(key, num_populations), 
                                         reproduction_type_probabilities, 
                                         reproduction_probabilities, 

@@ -119,7 +119,7 @@ class GeneticProgramming:
                  max_nodes: int = 15,
                  device_type: str = 'cpu',
                  tournament_size: int = 7, 
-                 size_parsimony: float = 0.0, 
+                 complexity_objective: bool = False,
                  constant_sd: float = 1.0,
                  migration_period: int = 5,
                  migration_size: float = 10,
@@ -154,8 +154,7 @@ class GeneticProgramming:
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
 
-        assert size_parsimony >= 0, "The size parsimony can not be negative"
-        self.size_parsimony = size_parsimony
+        self.complexity_objective = complexity_objective
         assert constant_sd > 0, "The standard deviation of the constants should be larger than 0"
         self.constant_sd = constant_sd
 
@@ -255,7 +254,6 @@ class GeneticProgramming:
 
         self.jit_evolve_population = jax.jit(jax.vmap(partial(evolve_population, 
                                                      reproduction_functions=self.reproduction_functions, 
-                                                     elite_size=self.elite_size, 
                                                      tournament_size=self.tournament_size, 
                                                      num_trees=self.num_trees, 
                                                      population_size=population_size),
@@ -479,8 +477,7 @@ class GeneticProgramming:
             fitness, population = self.evaluate_population(population, data, eval_key)
 
             if verbose:
-                best_fitness, best_solution = self.get_statistics(g)
-                print(f"In generation {g+1}, best fitness = {best_fitness:.4f}, best solution = {self.expression_to_string(best_solution)}")
+                print(f"In generation {g+1}")
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
@@ -490,8 +487,6 @@ class GeneticProgramming:
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""
         self.current_generation = 0
-        self.best_fitnesses = jnp.zeros(self.num_generations)
-        self.best_solutions = jnp.zeros((self.num_generations, self.num_trees, self.max_nodes, 4))
         self.constant_step_size = self.constant_step_size_init
 
         # The Pareto front keeps track of the best solutions at each complexity level
@@ -541,9 +536,15 @@ class GeneticProgramming:
 
         populations, fitness = jax.vmap(self.punish_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
 
+        fitness = jnp.expand_dims(fitness, axis=2) #Expand fitness to match the shape of the populations
+        
+        if self.complexity_objective:
+            complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
+            fitness = jnp.concatenate([fitness, complexities[:,:,None]], axis=-1)
+
         new_populations = evolve_populations(self.jit_evolve_population, 
                                              populations, 
-                                             fitness, 
+                                             fitness,
                                              key, 
                                              self.current_generation, 
                                              self.migration_period, 
@@ -551,6 +552,9 @@ class GeneticProgramming:
                                              self.reproduction_type_probabilities, 
                                              self.reproduction_probabilities, 
                                              self.tournament_probabilities)
+        
+        # for i in range(3):
+        #     print(self.expression_to_string(new_populations[0,i]))
         
         self.increase_generation()
         self.constant_step_size = jnp.maximum(self.constant_step_size * self.constant_step_size_decay, 0.001) #Update step size for constant optimization
@@ -770,16 +774,6 @@ class GeneticProgramming:
 
         self.update_pareto_front(fitness, flat_populations)
 
-        # Increase fitness based on the size of the candidate
-        fitness = fitness + jax.vmap(lambda array: self.size_parsimony * jnp.sum(array[:, :, 0] != 0))(flat_populations)
-
-        best_solution = flat_populations[jnp.argmin(fitness)]
-        best_fitness = jnp.min(fitness)
-
-        # Store best fitness and solution
-        self.best_solutions = self.best_solutions.at[self.current_generation].set(best_solution)
-        self.best_fitnesses = self.best_fitnesses.at[self.current_generation].set(best_fitness)
-
         # Reshape the populations into the subpopulations
         fitness = fitness.reshape((self.num_populations, self.population_size))
         populations = flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))
@@ -927,26 +921,7 @@ class GeneticProgramming:
         population = population[indices]
         fitness = fitness[indices]
         return population, jnp.where(counts > 0, fitness, self.max_fitness)
-       
-    def get_statistics(self, generation: int = None) -> Tuple[Array, Array]:
-        """
-        Returns best fitness and best solution.
 
-        Parameters
-        ----------
-        generation : int, optional
-            Generation of which the best fitness and solution are required. If None, returns all best fitness and solutions.
-
-        Returns
-        -------
-        Tuple[Array, Array]
-            Best fitness and best solution.
-        """
-        if generation is not None:
-            return self.best_fitnesses[generation], self.best_solutions[generation]
-        else:
-            return self.best_fitnesses, self.best_solutions
-       
     def update_pareto_front(self, current_fitness: Array, current_population: Array) -> None:
         """
         Updates the Pareto front with the current population.
