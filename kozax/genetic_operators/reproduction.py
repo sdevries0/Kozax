@@ -74,11 +74,12 @@ def tournament_selection(population: Array,
         Candidate that won the tournament.
     """
     tournament_key, winner_key = jr.split(key)
-    indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,))
+    indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,), replace=False)
 
     tournament_ranks = ranks[indices] + 1
 
     winner_index = jr.choice(winner_key, indices, p=1/tournament_ranks)
+    # winner_index = jax.lax.select(tournament_ranks[0] == tournament_ranks[1], jr.choice(winner_key, indices, p=1/tournament_ranks), indices[jnp.argmax(tournament_ranks)])
 
     return population[winner_index]
 
@@ -120,8 +121,6 @@ def identify_non_dominated(metrics: Array) -> Array:
     
     # A solution is non-dominated if it's not dominated by any other solution
     dominated_by_others = ~jnp.any(j_dominates_i, axis=1)
-    # dominated_by_others = jnp.sum(j_dominates_i, axis=1)
-    # dominates_others = jnp.sum(~j_dominates_i, axis=0)
     
     return dominated_by_others
 
@@ -166,6 +165,7 @@ def nsga2(metrics: Array) -> Array:
 
 def evolve_population(population: Array, 
                       metrics: Array, 
+                      ranks: Array,
                       key: PRNGKey, 
                       reproduction_type_probabilities: Array, 
                       reproduction_probability: float, 
@@ -210,20 +210,19 @@ def evolve_population(population: Array,
         Evolved population.
     """
     left_key, right_key, repro_key, evo_key = jr.split(key, 4)
-    nsga_ranks = nsga2(metrics)
-    elite = jnp.argsort(nsga_ranks, descending=False)
+    elite = jnp.argsort(ranks, descending=False)
 
     # Sample parents for reproduction
     left_parents = jax.vmap(tournament_selection, in_axes=[None, None, None, 0, None, None])(population, 
                                                                                              metrics, 
-                                                                                             nsga_ranks,
+                                                                                             ranks,
                                                                                              jr.split(left_key, population_size//2), 
                                                                                              tournament_size, 
                                                                                              population_indices)
     
     right_parents = jax.vmap(tournament_selection, in_axes=[None, None, None, 0, None, None])(population, 
                                                                                               metrics, 
-                                                                                              nsga_ranks,
+                                                                                              ranks,
                                                                                               jr.split(right_key, population_size//2), 
                                                                                               tournament_size, 
                                                                                               population_indices)
@@ -237,8 +236,8 @@ def evolve_population(population: Array,
                                                                                              reproduction_probability, 
                                                                                              reproduction_functions)
     
-    # evolved_population = jnp.where(nsga_ranks[:,None,None,None] == 0, population, jnp.concatenate([left_children, right_children], axis=0))
-    evolved_population = jnp.where(population_indices[:,None,None,None] < 10, population[elite], jnp.concatenate([left_children, right_children], axis=0))
+    evolved_population = jnp.where(ranks[:,None,None,None] == 0, population, jnp.concatenate([left_children, right_children], axis=0))
+    # evolved_population = jnp.where(population_indices[:,None,None,None] < 5, population[elite], jnp.concatenate([left_children, right_children], axis=0))
 
     return evolved_population
 
@@ -246,6 +245,8 @@ def migrate_population(receiver: Array,
                        sender: Array, 
                        receiver_metrics: Array, 
                        sender_metrics: Array, 
+                       receiver_ranks: Array,
+                       sender_ranks: Array,
                        migration_size: int, 
                        population_indices: Array) -> Tuple[Array, Array]:
     """Unfit candidates from one population are replaced with fit candidates from another population.
@@ -271,13 +272,16 @@ def migrate_population(receiver: Array,
         Population after migration and their fitness.
     """
     # Identify the Pareto front of the sender population
-    sender_dominated_ranks = jnp.argsort(nsga2(sender_metrics), descending=False)
-    receiver_dominated_ranks = jnp.argsort(nsga2(receiver_metrics), descending=True)
+    sender_dominated_ranks = jnp.argsort(sender_ranks, descending=False)
+    receiver_dominated_ranks = jnp.argsort(receiver_ranks, descending=True)
 
     # Replace the selected locations in the receiver with Pareto front individuals
     migrated_population = jnp.where((population_indices < migration_size)[:,None,None,None], sender[sender_dominated_ranks], receiver[receiver_dominated_ranks])
-    migrated_fitness = jnp.where((population_indices < migration_size)[:,None], sender_metrics[sender_dominated_ranks], receiver_metrics[receiver_dominated_ranks])
-    return migrated_population, migrated_fitness
+    migrated_metrics = jnp.where((population_indices < migration_size)[:,None], sender_metrics[sender_dominated_ranks], receiver_metrics[receiver_dominated_ranks])
+
+    new_ranks = nsga2(migrated_metrics)
+
+    return migrated_population, migrated_metrics, new_ranks
 
 def evolve_populations(jit_evolve_population: Callable, 
                        populations: Array, 
@@ -322,19 +326,25 @@ def evolve_populations(jit_evolve_population: Callable,
     num_populations, population_size, num_trees, _, _ = populations.shape
     population_indices = jnp.arange(population_size)
 
+    nsga_ranks = jax.vmap(nsga2)(metrics)
+
     # Migrate candidates between populations. The populations and fitnesses are rolled for circular migration.
-    populations, metrics = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
-                                    jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, None, None]), 
-                                    jax.vmap(lambda receiver, sender, receiver_fitness, sender_fitness, migration_size, population_indices: (receiver, receiver_fitness), in_axes=[0, 0, 0, 0, None, None]), 
+    populations, metrics, nsga_ranks = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
+                                    jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, 0, 0, None, None]), 
+                                    jax.vmap(lambda receiver, sender, receiver_fitness, sender_fitness, receiver_ranks, sender_ranks, migration_size, population_indices: (receiver, receiver_fitness, receiver_ranks), 
+                                             in_axes=[0, 0, 0, 0, 0, 0, None, None]), 
                                         populations, 
                                         jnp.roll(populations, 1, axis=0), 
                                         metrics, 
                                         jnp.roll(metrics, 1, axis=0), 
+                                        nsga_ranks,
+                                        jnp.roll(nsga_ranks, 1, axis=0), 
                                         migration_size, 
                                         population_indices)
     
     new_population = jit_evolve_population(populations, 
                                         metrics, 
+                                        nsga_ranks,
                                         jr.split(key, num_populations), 
                                         reproduction_type_probabilities, 
                                         reproduction_probabilities, 

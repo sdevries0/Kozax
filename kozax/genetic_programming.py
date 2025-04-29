@@ -257,7 +257,7 @@ class GeneticProgramming:
                                                      tournament_size=self.tournament_size, 
                                                      num_trees=self.num_trees, 
                                                      population_size=population_size),
-                                                    in_axes=[0, 0, 0, 0, 0, 0, None]))
+                                                    in_axes=[0, 0, 0, 0, 0, 0, 0, None]))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
@@ -285,7 +285,7 @@ class GeneticProgramming:
         if constant_optimization_method == "evolution":
             assert constant_optimization_N_offspring > 0, "The offspring size for constant optimization should be larger than 0"
             self.constant_optimization_steps = constant_optimization_steps
-            self.optimize_constants_function = jax.vmap(partial(self.optimize_constants_with_evolution, n_iterations=constant_optimization_steps), in_axes=[0, None, 0])
+            self.optimize_constants_function = jax.vmap(partial(self.optimize_constants_with_evolution, n_iterations=constant_optimization_steps), in_axes=[0, None, 0, None])
             self.n_offspring = constant_optimization_N_offspring
             self.constant_optimization = True
         elif constant_optimization_method == "gradient":
@@ -307,9 +307,9 @@ class GeneticProgramming:
             
             return jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
             
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i')), out_specs=(P('i'), P('i')), check_rep=False)
-        def shard_optimize(array, data, keys):
-            result, _array = self.optimize_constants_function(array, data, keys)
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')), check_rep=False)
+        def shard_optimize(array, data, keys, step_size):
+            result, _array = self.optimize_constants_function(array, data, keys, step_size)
             return result, _array
         
         self.jit_eval = jax.jit(shard_eval)
@@ -540,7 +540,7 @@ class GeneticProgramming:
         
         if self.complexity_objective:
             complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
-            complexities = jnp.minimum(complexities, 6*jnp.ones_like(complexities)) #Limit the complexity to 6
+            complexities = jnp.maximum(complexities, 5*self.num_trees*jnp.ones_like(complexities)) #Limit the complexity to 6
             fitness = jnp.concatenate([fitness, complexities[:,:,None]], axis=-1)
 
         new_populations = evolve_populations(self.jit_evolve_population, 
@@ -767,7 +767,7 @@ class GeneticProgramming:
             best_candidates = flat_populations[best_candidates_idx]
 
             # optimize constants of the best candidates
-            optimized_fitness, optimized_population = self.jit_optimize(best_candidates, data, jr.split(key, self.optimize_constants_elite))
+            optimized_fitness, optimized_population = self.jit_optimize(best_candidates, data, jr.split(key, self.optimize_constants_elite), self.constant_step_size)
 
             # Store updated candidates and fitness
             flat_populations = flat_populations.at[best_candidates_idx].set(optimized_population)
@@ -858,12 +858,12 @@ class GeneticProgramming:
         Tuple[Tuple[Array, Tuple, PRNGKey], float]
             Tuple containing updated candidate, data, and key, and the best fitness.
         """
-        candidate, data, key = carry
+        candidate, data, key, step_size = carry
 
         key, sample_key = jr.split(key)
 
         mask = candidate[..., 0] == 1.0 #Only samples mutations for the nodes that contain a constant
-        mutations = jax.vmap(lambda _key: self.constant_step_size * jr.normal(_key, shape=(self.num_trees, self.max_nodes,)) * mask)(jr.split(sample_key, self.n_offspring))
+        mutations = jax.vmap(lambda _key: step_size * jr.normal(_key, shape=(self.num_trees, self.max_nodes,)) * mask)(jr.split(sample_key, self.n_offspring))
         mutations = jnp.vstack([jnp.zeros((1, self.num_trees, self.max_nodes)), mutations])
 
         offspring = jax.vmap(lambda m: candidate.at[..., 3].set(candidate[..., 3] + m))(mutations)
@@ -876,9 +876,9 @@ class GeneticProgramming:
 
         fitness = jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
 
-        return (offspring[jnp.argmin(fitness)], data, key), jnp.min(fitness)
+        return (offspring[jnp.argmin(fitness)], data, key, step_size), jnp.min(fitness)
 
-    def optimize_constants_with_evolution(self, candidate: Array, data: Tuple, key: PRNGKey, n_iterations: int) -> Tuple[float, Array]:
+    def optimize_constants_with_evolution(self, candidate: Array, data: Tuple, key: PRNGKey, step_size: float, n_iterations: int) -> Tuple[float, Array]:
         """
         optimizes a candidate using Evolution Strategies (ES).
 
@@ -898,7 +898,7 @@ class GeneticProgramming:
         Tuple[float, Array]
             Best fitness and optimized candidate.
         """
-        (new_candidate, _, _), fitness = jax.lax.scan(self.optimize_constants_generation, (candidate, data, key), length=n_iterations)
+        (new_candidate, _, _, _), fitness = jax.lax.scan(self.optimize_constants_generation, (candidate, data, key, step_size), length=n_iterations)
 
         return jnp.min(fitness), new_candidate
 
