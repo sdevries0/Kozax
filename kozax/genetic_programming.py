@@ -490,7 +490,7 @@ class GeneticProgramming:
         self.constant_step_size = self.constant_step_size_init
 
         # The Pareto front keeps track of the best solutions at each complexity level
-        self.pareto_front = (jnp.ones(self.max_complexity) * self.max_fitness, jnp.zeros((self.max_complexity, self.num_trees, self.max_nodes, 4)))
+        self.pareto_front = (self.max_fitness, jnp.zeros((self.num_trees, self.max_nodes, 4)))
 
     def increase_generation(self) -> None:
         """Increases the current generation count."""
@@ -923,7 +923,7 @@ class GeneticProgramming:
         fitness = fitness[indices]
         return population, jnp.where(counts > 0, fitness, self.max_fitness)
 
-    def update_pareto_front(self, current_fitness: Array, current_population: Array) -> None:
+    def update_pareto_front(self, fitness: Array, population: Array) -> None:
         """
         Updates the Pareto front with the current population.
 
@@ -935,49 +935,37 @@ class GeneticProgramming:
             Current population.
         """
         # Compute complexity of the current population
-        current_population_complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(current_population)
-        pareto_fitness, pareto_solutions = self.pareto_front
+        complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(population)[:,None]
+        metrics = jnp.concatenate([fitness[:,None], complexity], axis=-1)
 
-        # Replace the best solutions in the Pareto front with the best solutions at each complexity level
-        new_pareto_front = jax.vmap(self.find_best_solution_given_complexity_level, in_axes=[0, None, None, None, 0, 0])(
-            self.complexities, current_fitness, current_population, current_population_complexity, pareto_fitness, pareto_solutions)
+        # For each solution i, check if it's dominated by any other solution j
+        
+        # Reshape metrics for broadcasting
+        # Shape: (n_solutions, 1, n_objectives)
+        metrics_i = jnp.expand_dims(metrics, axis=1)
+        
+        # Shape: (1, n_solutions, n_objectives)
+        metrics_j = jnp.expand_dims(metrics, axis=0)
+        
+        # Check if j dominates i: 
+        # 1. j is better or equal in all objectives
+        # 2. j is strictly better in at least one objective
+        j_better_or_equal = (metrics_j <= metrics_i)
+        j_strictly_better = (metrics_j < metrics_i)
+        
+        # For each pair (i,j), check if j dominates i
+        j_dominates_i = jnp.all(j_better_or_equal, axis=2) & jnp.any(j_strictly_better, axis=2)
+        
+        # Don't compare solutions with themselves
+        mask = ~jnp.eye(metrics.shape[0], dtype=bool)
+        j_dominates_i = j_dominates_i & mask
+        
+        # A solution is non-dominated if it's not dominated by any other solution
+        dominated_by_others = ~jnp.any(j_dominates_i, axis=1)
+        
+        pareto_indices = jnp.nonzero(dominated_by_others)[0]
 
-        self.pareto_front = new_pareto_front
-
-    def find_best_solution_given_complexity_level(self, complexity: int, current_fitness: Array, current_population: Array, current_population_complexity: Array, best_fitness: float, best_solution: Array) -> Tuple[float, Array]:
-        """
-        Finds the best solution given a complexity level.
-
-        Parameters
-        ----------
-        complexity : int
-            Complexity level.
-        current_fitness : Array
-            Fitness of the current population.
-        current_population : Array
-            Current population.
-        current_population_complexity : Array
-            Complexity of the current population.
-        best_fitness : float
-            Best fitness so far.
-        best_solution : Array
-            Best solution so far.
-
-        Returns
-        -------
-        Tuple[float, Array]
-            New best fitness and solution.
-        """
-
-        #Only consider the candidates with the same complexity level
-        fitness_at_complexity_level = jnp.where(current_population_complexity == complexity, current_fitness, jnp.ones_like(current_fitness) * self.max_fitness)
-        best_fitness_at_complexity_level = jnp.min(fitness_at_complexity_level)
-        best_solution_at_complexity_level = jax.lax.select(best_fitness_at_complexity_level == self.max_fitness, self.empty_candidate, current_population[jnp.argmin(fitness_at_complexity_level)])
-
-        new_best_fitness = jax.lax.select(best_fitness_at_complexity_level > best_fitness, best_fitness, best_fitness_at_complexity_level)
-        new_best_solution = jax.lax.select(best_fitness_at_complexity_level > best_fitness, best_solution, best_solution_at_complexity_level)
-
-        return new_best_fitness, new_best_solution
+        self.pareto_front = (fitness[pareto_indices], population[pareto_indices])
 
     def print_pareto_front(self, save: bool = False, file_name: str = None) -> None:
         """
@@ -991,31 +979,35 @@ class GeneticProgramming:
             Name of the file to save the Pareto front.
         """
         pareto_fitness, pareto_solutions = self.pareto_front
-        best_pareto_fitness = self.max_fitness
+
+        complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
+
+        sorted_indices = jnp.argsort(complexities)
+        pareto_fitness = pareto_fitness[sorted_indices]
+        pareto_solutions = pareto_solutions[sorted_indices]
+        complexities = complexities[sorted_indices]
 
         if save:
-            complexities = ['Complexity', 'Fitness']
+            pareto_table = ['Complexity', 'Fitness']
             for i in range(self.num_trees):
-                complexities.append(f'Equation {i}')
-            complexities = [tuple(complexities)]
+                pareto_table.append(f'Equation {i}')
+            pareto_table = [tuple(pareto_table)]
 
-        for c in range(self.max_complexity):
-            if pareto_fitness[c] < best_pareto_fitness: # Only print the candidate at higher complexity if it is better than the previous best candidate
-                string_equations = self.expression_to_string(pareto_solutions[c])
-                print(f"Complexity: {c}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
-                best_pareto_fitness = pareto_fitness[c]
+        for c in range(complexities.shape[0]):
+            string_equations = self.expression_to_string(pareto_solutions[c])
+            print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
 
-                if save:
-                    if self.num_trees > 1:
-                        temp = (c, pareto_fitness[c])
-                        for tree in string_equations:
-                            temp += (tree,)
-                        complexities.append(temp)
-                    else:
-                        complexities.append((c, pareto_fitness[c], string_equations))
+            if save:
+                if self.num_trees > 1:
+                    temp = (complexities[c], pareto_fitness[c])
+                    for tree in string_equations:
+                        temp += (tree,)
+                    pareto_table.append(temp)
+                else:
+                    pareto_table.append((complexities[c], pareto_fitness[c], string_equations))
 
         if save:
-            np.savetxt(f'{file_name}.csv', complexities, delimiter=',', fmt='%s')
+            np.savetxt(f'{file_name}.csv', pareto_table, delimiter=',', fmt='%s')
     
     def tree_to_string(self, tree: Array) -> str:
         """
