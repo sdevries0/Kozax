@@ -965,7 +965,9 @@ class GeneticProgramming:
         
         pareto_indices = jnp.nonzero(dominated_by_others)[0]
 
-        self.pareto_front = (fitness[pareto_indices], population[pareto_indices])
+        pareto_solutions, unique_indices = jnp.unique(population[pareto_indices], return_index=True, axis=0)
+
+        self.pareto_front = (fitness[pareto_indices][unique_indices], pareto_solutions)
 
     def print_pareto_front(self, save: bool = False, file_name: str = None) -> None:
         """
