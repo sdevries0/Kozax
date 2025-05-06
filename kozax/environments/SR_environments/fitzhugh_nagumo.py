@@ -13,9 +13,9 @@ from kozax.environments.SR_environments.time_series_environment_base import Envi
 from jaxtyping import Array
 from typing import Tuple
 
-class VanDerPolOscillator(EnvironmentBase):
+class FitzHughNagumo(EnvironmentBase):
     """
-    Van der Pol Oscillator environment for symbolic regression tasks.
+    FitzHugh-Nagumo environment for symbolic regression tasks.
 
     Parameters
     ----------
@@ -28,8 +28,12 @@ class VanDerPolOscillator(EnvironmentBase):
         Mean of the initial state distribution.
     init_sd : :class:`jax.Array`
         Standard deviation of the initial state distribution.
-    mu : float
-        Parameter mu of the Van der Pol system.
+    a : float
+        Parameter a of the FitzHugh-Nagumo system.
+    b : float
+        Parameter b of the FitzHugh-Nagumo system.
+    c : float
+        Parameter c of the FitzHugh-Nagumo system.
     V : :class:`jax.Array`
         Process noise covariance matrix.
 
@@ -50,7 +54,9 @@ class VanDerPolOscillator(EnvironmentBase):
         self.init_mu = jnp.array([0, 0])
         self.init_sd = jnp.array([1.0, 1.0])
 
-        self.mu = 1
+        self.a = 0.7
+        self.b = 0.8
+        self.c = 12.5
         self.V = self.process_noise * jnp.eye(self.n_var)
 
     def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Array:
@@ -90,7 +96,10 @@ class VanDerPolOscillator(EnvironmentBase):
             Drift.
         """
         control = args[0]  # Default to 0 if no control is provided
-        return jnp.array([state[1], self.mu * (1 - state[0]**2) * state[1] - state[0] + control])
+        v, w = state
+        dv_dt = v - (v**3) / 3 - w + control
+        dw_dt = (v + self.a - self.b * w) / self.c
+        return jnp.array([dv_dt, dw_dt])
 
     def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
         """

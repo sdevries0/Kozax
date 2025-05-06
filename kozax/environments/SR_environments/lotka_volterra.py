@@ -80,7 +80,7 @@ class LotkaVolterra(EnvironmentBase):
         """
         return jrandom.uniform(key, shape=(batch_size, 2), minval=5, maxval=15)
     
-    def drift(self, t: float, state: Array, args: Tuple) -> Array:
+    def drift(self, t: float, state: Array, args: float = jnp.array([0.0])) -> Array:
         """
         Computes the drift function for the environment.
 
@@ -98,7 +98,8 @@ class LotkaVolterra(EnvironmentBase):
         :class:`jax.Array`
             Drift.
         """
-        return jnp.array([self.alpha * state[0] - self.beta * state[0] * state[1], self.delta * state[0] * state[1] - self.gamma * state[1]])
+        control = args[0]
+        return jnp.array([self.alpha * state[0] - self.beta * state[0] * state[1], self.delta * state[0] * state[1] - self.gamma * state[1] + control])
 
     def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
         """

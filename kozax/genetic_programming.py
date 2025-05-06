@@ -478,6 +478,9 @@ class GeneticProgramming:
 
             if verbose:
                 print(f"In generation {g+1}")
+                self.print_pareto_front()
+
+
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
@@ -997,7 +1000,10 @@ class GeneticProgramming:
 
         for c in range(complexities.shape[0]):
             string_equations = self.expression_to_string(pareto_solutions[c])
-            print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
+            if self.num_trees>1:
+                print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
+            else:
+                print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equation: {string_equations}")
 
             if save:
                 if self.num_trees > 1:
