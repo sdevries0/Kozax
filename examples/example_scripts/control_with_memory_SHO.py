@@ -1,9 +1,9 @@
 """
-Memory-based control policy optimization
+# Memory-based control policy optimization (Stochastic Harmonic Oscillator)
 
-In this more advanced example, we will optimize a symbolic control policy that is extended with a dynamic latent memory (check out this paper for more details: https://arxiv.org/abs/2406.02765).
-The memory is defined by a set of differential equations, consisting of a tree for each latent unit. The memory updates every time step, and the control policy maps the memory to a control 
-signal via an additional readout tree. This setup is applied to the partially observable acrobot swingup task, in which the angular velocity is hidden.
+In this more advanced example, we will optimize a symbolic control policy that is extended with a dynamic latent memory (check out this paper for more details: 
+https://arxiv.org/abs/2406.02765). The memory is defined by a set of differential equations, consisting of a tree for each latent unit. The memory updates every time step, and the 
+control policy maps the memory to a control signal via an additional readout tree. This setup is applied to stabilization of the stochastic harmonic oscillator at random targets.
 """
 
 # Specify the cores to use for XLA
@@ -20,25 +20,37 @@ from typing import Tuple, Callable
 import copy
 
 from kozax.genetic_programming import GeneticProgramming
-from kozax.environments.control_environments.acrobot import Acrobot
+from kozax.environments.control_environments.harmonic_oscillator import HarmonicOscillator
 
 """
 First we generate data, consisting of initial conditions, keys for noise, targets and parameters of the environment.
 """
 
 def get_data(key, env, batch_size, dt, T, param_setting):
-    init_key, noise_key2, param_key = jr.split(key, 3)
+    init_key, noise_key, param_key = jr.split(key, 3)
     x0, targets = env.sample_init_states(batch_size, init_key)
-    obs_noise_keys = jr.split(noise_key2, batch_size)
+    noise_keys = jr.split(noise_key, batch_size)
     ts = jnp.arange(0, T, dt)
 
     params = env.sample_params(batch_size, param_setting, ts, param_key)
-    return x0, ts, targets, obs_noise_keys, params
+    return x0, ts, targets, noise_keys, params
+
+key = jr.PRNGKey(0)
+gp_key, data_key = jr.split(key)
+batch_size = 8
+T = 40
+dt = 0.2
+param_setting = "Constant"
+
+env = HarmonicOscillator(process_noise = 0.05, obs_noise = 0.05)
+
+data = get_data(data_key, env, batch_size, dt, T, param_setting)
 
 """
-The evaluator class parallelizes the simulation of the control loop over the batched data. In each trajectory, a coupled dynamical system is simulated using diffrax, integrating both the 
-dynamic memory and the dynamic environment. At every time step, the state of the environment is mapped to an observations and the latent memory is mapped to a control signal. Afterwards, 
-the state equation of the memory and environment state is computed. When the simulation is done, the fitness is computed given the control and environment state.
+The evaluator class parallelizes the simulation of the control loop over the batched data. In each trajectory, a coupled dynamical system is simulated using diffrax, 
+integrating both the dynamic memory and the dynamic environment, defined by the drift and diffusion functions. At every time step, the state of the environment is mapped to 
+observations and the latent memory is mapped to a control signal. Afterwards, the state equation of the memory and environment state is computed. When the simulation is done, 
+the fitness is computed given the control and environment state.
 """
 
 class Evaluator:
@@ -92,7 +104,7 @@ class Evaluator:
         fitness = jnp.mean(fitness)
         return fitness
       
-    def evaluate_trajectory(self, candidate: Array, x0: Array, ts: Array, target: float, obs_noise_key: jr.PRNGKey, params: Tuple, tree_evaluator: Callable) -> Tuple[Array, Array, Array, Array, float]:
+    def evaluate_trajectory(self, candidate: Array, x0: Array, ts: Array, target: float, noise_key: jr.PRNGKey, params: Tuple, tree_evaluator: Callable) -> Tuple[Array, Array, Array, Array, float]:
         """Solves the coupled differential equation of the system and controller. 
         The differential equation of the system is defined in the environment and the differential equation 
         of the control is defined by the set of trees.
@@ -102,7 +114,7 @@ class Evaluator:
             x0: Initial state of the system.
             ts: Time points on which the controller is evaluated.
             target: Target position that the system should reach.
-            obs_noise_key: Key to generate noisy observations.
+            noise_key: Key to generate noisy observations.
             params: Parameters that define the environment.
             tree_evaluator: Function for evaluating trees.
 
@@ -119,10 +131,13 @@ class Evaluator:
         dt0 = self.dt0
         saveat = diffrax.SaveAt(ts=ts)
 
+        process_noise_key, obs_noise_key = jr.split(noise_key, 2)
+
         # Concatenate the initial state of the system with the initial state of the latent memory
         _x0 = jnp.concatenate([x0, jnp.zeros(self.state_size)])
 
-        system = diffrax.ODETerm(self._drift)
+        brownian_motion = diffrax.UnsafeBrownianPath(shape=(env.n_var,), key=process_noise_key, levy_area=diffrax.SpaceTimeLevyArea) #define process noise
+        system = diffrax.MultiTerm(diffrax.ODETerm(self._drift), diffrax.ControlTerm(self._diffusion, brownian_motion))
         
         # Solve the coupled system of the environment and the controller
         sol = diffrax.diffeqsolve(
@@ -157,65 +172,63 @@ class Evaluator:
         da = tree_evaluator(state_equation, jnp.concatenate([y, a, u, target])) #Compute change in latent memory
 
         return jnp.concatenate([dx, da])
+    
+    def _diffusion(self, t, x_a, args):
+        env, state_equation, readout, obs_noise_key, target, tree_evaluator = args
+        x = x_a[:self.latent_size]
+        a = x_a[self.latent_size:]
 
+        return jnp.concatenate([env.diffusion(t, x, jnp.array([0])), jnp.zeros((self.state_size, self.latent_size))]) #Only the system is stochastic
+    
 """
-Here we define the hyperparameters, operators, variables and initialize the strategy. The control policy will consist of two latent variables and a readout layer.
+Here we define the hyperparameters, operators, variables and initialize the strategy. The control policy will consist of two latent variables and a readout layer. 
 `layer_sizes` allows us to define different types of tree, where `variable_list` contains different sets of input variables for each type of tree. 
 The readout layer will only receive the latent states, while the inputs to the state equations consists of the observations, control signal and latent states.
 """
 
-if __name__ == "__main__":
-    key = jr.PRNGKey(0)
-    gp_key, data_key = jr.split(key)
-    batch_size = 8
-    T = 40
-    dt = 0.2
-    param_setting = "Constant"
+#Define hyperparameters
+population_size = 100
+num_populations = 10
+num_generations = 50
+state_size = 2
 
-    env = Acrobot(n_obs = 2) # Partial observably Acrobot
+#Define expressions
+operator_list = [("+", lambda x, y: x + y, 2, 0.5), 
+                ("-", lambda x, y: x - y, 2, 0.1),
+                ("*", lambda x, y: x * y, 2, 0.5)]
 
-    data = get_data(data_key, env, batch_size, dt, T, param_setting)
-    
-    #Define hyperparameters
-    population_size = 100
-    num_populations = 10
-    num_generations = 50
-    state_size = 2
+variable_list = [["x" + str(i) for i in range(env.n_obs)] + ["a1", "a2", "u", "tar"], ["a1", "a2", "tar"]]
 
-    #Define expressions
-    operator_list = [("+", lambda x, y: x + y, 2, 0.5), 
-                    ("-", lambda x, y: x - y, 2, 0.1),
-                    ("*", lambda x, y: x * y, 2, 0.5),
-                    ("sin", lambda x: jnp.sin(x), 1, 0.1),
-                    ("cos", lambda x: jnp.cos(x), 1, 0.1)]
+layer_sizes = jnp.array([state_size, env.n_control_inputs])
 
-    variable_list = [["x" + str(i) for i in range(env.n_obs)] + ["a1", "a2", "u"], ["a1", "a2"]]
+#Define evaluator
+fitness_function = Evaluator(env, state_size, 0.05, solver=diffrax.GeneralShARK(), max_steps=1000)
 
-    layer_sizes = jnp.array([state_size, env.n_control_inputs])
+#Initialize strategy
+strategy = GeneticProgramming(num_generations, population_size, fitness_function, operator_list, variable_list, layer_sizes, num_populations = num_populations, size_parsimony=0.003)
 
-    #Define evaluator
-    fitness_function = Evaluator(env, state_size, 0.05, solver=diffrax.Dopri5(), stepsize_controller=diffrax.PIDController(atol=1e-4, rtol=1e-4, dtmin=0.001), max_steps=1000)
+strategy.fit(gp_key, data, verbose=True)
 
-    #Initialize strategy
-    strategy = GeneticProgramming(num_generations, population_size, fitness_function, operator_list, variable_list, layer_sizes, num_populations = num_populations, size_parsimony=0.003)
+# Visualize best solution
 
-    strategy.fit(gp_key, data, verbose=True)
+#Generate test_data
+data = get_data(jr.PRNGKey(10), env, 4, 0.01, T, param_setting)
+x0s, ts, targets, noise_key, params = data
 
-    """
-    ## Visualize best solution
-    """
+best_candidate = strategy.pareto_front[1][17]
+print(strategy.expression_to_string(best_candidate))
 
-    #Generate test_data
-    data = get_data(jr.PRNGKey(10), env, 1, 0.01, T, param_setting)
-    x0s, ts, _, _, params = data
+xs, ys, us, activities, fitness = jax.vmap(fitness_function.evaluate_trajectory, in_axes=[None, 0, None, 0, 0, 0, None])(best_candidate, *data, strategy.tree_evaluator)
 
-    best_candidate = strategy.pareto_front[1][21]
+fig, ax = plt.subplots(2, 2, figsize=(10, 5))
+ax = ax.ravel()
+for i in range(4):
+    ax[i].plot(ts, xs[i,:,0], label="$x_1$", color = "blue")
+    ax[i].plot(ts, xs[i,:,1], label="$x_2$", color = "orange")
+    ax[i].plot(ts, ys[i,:,0], alpha=0.3, color = "blue")
+    ax[i].plot(ts, ys[i,:,1], alpha=0.3, color = "orange")
+    ax[i].plot(ts, us[i,:], label="$u_1$", color = "green")
+    ax[i].hlines(targets[i], ts[0], ts[-1], linestyles='dashed', color = "black")
 
-    xs, ys, us, activities, fitness = jax.vmap(fitness_function.evaluate_trajectory, in_axes=[None, 0, None, 0, 0, 0, None])(best_candidate, *data, strategy.tree_evaluator)
-
-    plt.plot(ts, -jnp.cos(xs[0,:,0]), color = f"C{0}", label="first link")
-    plt.plot(ts, -jnp.cos(xs[0,:,0]) - jnp.cos(xs[0,:,0] + xs[0,:,1]), color = f"C{1}", label="second link")
-    plt.hlines(1.5, ts[0], ts[-1], linestyles='dashed', color = "black")
-
-    plt.legend(loc="best")
-    plt.show()
+plt.legend(loc="best")
+plt.show()
