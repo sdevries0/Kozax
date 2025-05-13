@@ -561,7 +561,8 @@ class GeneticProgramming:
         #     print(self.expression_to_string(new_populations[0,i]))
         
         self.increase_generation()
-        self.constant_step_size = jnp.maximum(self.constant_step_size * self.constant_step_size_decay, 0.001) #Update step size for constant optimization
+        if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
+            self.constant_step_size = jnp.maximum(self.constant_step_size * self.constant_step_size_decay, 0.001) #Update step size for constant optimization
         return self.jit_simplify_constants(new_populations)
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
@@ -772,9 +773,14 @@ class GeneticProgramming:
             # optimize constants of the best candidates
             optimized_fitness, optimized_population = self.jit_optimize(best_candidates, data, jr.split(key, self.optimize_constants_elite), self.constant_step_size)
 
+            optimized_population = jax.block_until_ready(optimized_population)
+
             # Store updated candidates and fitness
             flat_populations = flat_populations.at[best_candidates_idx].set(optimized_population)
             fitness = fitness.at[best_candidates_idx].set(optimized_fitness)
+
+            # jax.clear_backends()  # Clear compilation cache
+            # jax.clear_caches()
 
         self.update_pareto_front(fitness, flat_populations)
 
@@ -814,7 +820,7 @@ class GeneticProgramming:
 
         return (new_candidates, states, data), (candidates, loss)
 
-    def optimize_constants_with_gradients(self, candidates: Array, data: Tuple, key: PRNGKey, n_epoch: int) -> Tuple[Array, Array]:
+    def optimize_constants_with_gradients(self, candidates: Array, data: Tuple, key: PRNGKey, step_size: float, n_epoch: int) -> Tuple[Array, Array]:
         """
         optimizes the constants in the candidates.
 
