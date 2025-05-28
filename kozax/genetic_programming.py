@@ -729,9 +729,10 @@ class GeneticProgramming:
             Result of each tree.
         """
 
-        data = jnp.atleast_1d(data)
+        # data = jnp.atleast_1d(data)
         result = jax.vmap(self.iterate_through_tree, in_axes=[0, None])(candidate, data) #Evaluate each tree in the candidate
-        return jnp.squeeze(result)
+        # return jnp.squeeze(result)
+        return result
 
     def evaluate_population(self, populations: Array, data: Tuple, key: PRNGKey) -> Tuple[Array, Array]:
         """
