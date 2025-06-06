@@ -1004,21 +1004,25 @@ class GeneticProgramming:
                 pareto_table.append(f'Equation {i}')
             pareto_table = [tuple(pareto_table)]
 
+        expression_strings = []
+
         for c in range(complexities.shape[0]):
             string_equations = self.expression_to_string(pareto_solutions[c])
-            if self.num_trees>1:
-                print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
-            else:
-                print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equation: {string_equations}")
-
-            if save:
-                if self.num_trees > 1:
-                    temp = (complexities[c], pareto_fitness[c])
-                    for tree in string_equations:
-                        temp += (tree,)
-                    pareto_table.append(temp)
+            if string_equations not in expression_strings:
+                expression_strings.append(string_equations)
+                if self.num_trees>1:
+                    print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
                 else:
-                    pareto_table.append((complexities[c], pareto_fitness[c], string_equations))
+                    print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equation: {string_equations}")
+
+                if save:
+                    if self.num_trees > 1:
+                        temp = (complexities[c], pareto_fitness[c])
+                        for tree in string_equations:
+                            temp += (tree,)
+                        pareto_table.append(temp)
+                    else:
+                        pareto_table.append((complexities[c], pareto_fitness[c], string_equations))
 
         if save:
             np.savetxt(f'{file_name}.csv', pareto_table, delimiter=',', fmt='%s')
