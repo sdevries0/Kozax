@@ -96,7 +96,7 @@ class LorenzAttractor(EnvironmentBase):
             Drift.
         """
         u = args[0]
-        return jnp.array([self.sigma * (state[1] - state[0]) + u, state[0] * (self.rho - state[2]) - state[1], state[0] * state[1] - self.beta * state[2]])
+        return jnp.array([self.sigma * (state[1] - state[0]), state[0] * (self.rho - state[2]) - state[1], state[0] * state[1] - self.beta * state[2]])
 
     def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
         """

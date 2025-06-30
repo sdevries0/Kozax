@@ -543,7 +543,7 @@ class GeneticProgramming:
         
         if self.complexity_objective:
             complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
-            complexities = jnp.maximum(complexities, 5*self.num_trees*jnp.ones_like(complexities)) #Limit the complexity to 6
+            complexities = jnp.maximum(complexities, 5*self.num_trees*jnp.ones_like(complexities))
             fitness = jnp.concatenate([fitness, complexities[:,:,None]], axis=-1)
 
         new_populations = evolve_populations(self.jit_evolve_population, 
