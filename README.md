@@ -68,7 +68,7 @@ There are additional [examples](https://github.com/sdevries0/kozax/tree/main/exa
 |---|---|---|
 |Symbolic regression of a dynamical system|[Notebook](examples/example_notebooks/symbolic_regression_dynamical_system.ipynb)|[Script](examples/example_scripts/symbolic_regression_dynamical_system.py)|
 |Control policy optimization in Gymnax environment|[Notebook](examples/example_notebooks/control_policy_optimization.ipynb)|[Script](examples/example_scripts/control_policy_optimization.py)|
-|Control policy optimization with dynamic memory|[Notebook](examples/example_notebooks/control_policy_optimization_with_memory.ipynb)|[Script](examples/example_scripts/control_policy_optimization_with_memory.py)|
+|Control policy optimization with dynamic memory|[Notebook](examples/example_notebooks/control_with_memory_SHO.ipynb)|[Script](examples/example_scripts/control_with_memory_SHO.py)|
 |Optimization of a loss function to train a neural network|[Notebook](examples/example_notebooks/objective_function_optimization.ipynb)|[Script](examples/example_scripts/objective_function_optimization.py)|
 
 
