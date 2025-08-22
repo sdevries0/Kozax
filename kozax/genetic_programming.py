@@ -1043,23 +1043,33 @@ class GeneticProgramming:
 
         expression_strings = []
 
+        # Group solutions by complexity and get the best fitness for each
+        unique_complexities = jnp.unique(complexities)
+        printed_complexities = set()  # Track which complexity levels we've printed
+
         for c in range(complexities.shape[0]):
             string_equations = self.expression_to_string(pareto_solutions[c])
-            if string_equations not in expression_strings:
-                expression_strings.append(string_equations)
-                if self.num_trees>1:
-                    print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
-                else:
-                    print(f"Complexity: {complexities[c]}, fitness: {pareto_fitness[c]}, equation: {string_equations}")
-
-                if save:
-                    if self.num_trees > 1:
-                        temp = (complexities[c], pareto_fitness[c])
-                        for tree in string_equations:
-                            temp += (tree,)
+            complexity = complexities[c].item()
+            
+            # Always save all solutions
+            if save:
+                if self.num_trees > 1:
+                    temp = (complexity, pareto_fitness[c])
+                    for tree in string_equations:
+                        temp += (tree,)
                         pareto_table.append(temp)
-                    else:
-                        pareto_table.append((complexities[c], pareto_fitness[c], string_equations))
+                else:
+                    pareto_table.append((complexity, pareto_fitness[c], string_equations))
+            
+            # Only print if we haven't printed this complexity level yet
+            if complexity not in printed_complexities and string_equations not in expression_strings:
+                printed_complexities.add(complexity)
+                expression_strings.append(string_equations)
+                
+                if self.num_trees > 1:
+                    print(f"Complexity: {complexity}, fitness: {pareto_fitness[c]}, equations: {string_equations}")
+                else:
+                    print(f"Complexity: {complexity}, fitness: {pareto_fitness[c]}, equation: {string_equations}")
 
         if save:
             np.savetxt(f'{path_to_file}/pareto_front.csv', pareto_table, delimiter=',', fmt='%s')
