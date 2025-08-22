@@ -46,7 +46,6 @@ def evolve_trees(parent1: Array,
     return child0, child1
 
 def tournament_selection(population: Array, 
-                         metrics: Array, 
                          ranks: Array,
                          key: PRNGKey, 
                          tournament_size: int, 
@@ -57,12 +56,10 @@ def tournament_selection(population: Array,
     ----------
     population : Array
         Population of candidates.
-    fitness : Array
-        Fitness of candidates.
+    ranks : Array
+        Ranks of candidates.
     key : PRNGKey
         Random key.
-    tournament_probabilities : Array
-        Probability of each of the ranks in the tournament to be selected for reproduction.
     tournament_size : int
         Size of the tournament.
     population_indices : Array
@@ -79,7 +76,6 @@ def tournament_selection(population: Array,
     tournament_ranks = ranks[indices] + 1
 
     winner_index = jr.choice(winner_key, indices, p=1/tournament_ranks)
-    # winner_index = jax.lax.select(tournament_ranks[0] == tournament_ranks[1], jr.choice(winner_key, indices, p=1/tournament_ranks), indices[jnp.argmax(tournament_ranks)])
 
     return population[winner_index]
 
@@ -97,10 +93,10 @@ def identify_non_dominated(metrics: Array) -> Array:
     Array
         Boolean mask identifying non-dominated solutions.
     """
+
     # For each solution i, check if it's dominated by any other solution j
     
-    # Reshape metrics for broadcasting
-    # Shape: (n_solutions, 1, n_objectives)
+    # Reshape metrics for broadcasting. Shape: (n_solutions, 1, n_objectives)
     metrics_i = jnp.expand_dims(metrics, axis=1)
     
     # Shape: (1, n_solutions, n_objectives)
@@ -159,21 +155,19 @@ def nsga2(metrics: Array) -> Array:
 
     initial_state = (0, all_indices, all_indices * 0)
     
-    final_rank, empty_indices, ranks = jax.lax.while_loop(cond_fun, body_fun, initial_state)
+    _, _, ranks = jax.lax.while_loop(cond_fun, body_fun, initial_state)
 
     return ranks
 
 def evolve_population(population: Array, 
-                      metrics: Array, 
                       ranks: Array,
                       key: PRNGKey, 
                       reproduction_type_probabilities: Array, 
                       reproduction_probability: float, 
-                      tournament_probabilities: Array, 
                       population_indices: Array, 
                       population_size: int, 
-                      tournament_size: int, 
                       num_trees: int, 
+                      tournament_size: int,
                       reproduction_functions: List[Callable]) -> Array:
     """Reproduces pairs of candidates to obtain a new population.
 
@@ -181,26 +175,22 @@ def evolve_population(population: Array,
     ----------
     population : Array
         Population of candidates.
-    fitness : Array
-        Fitness of candidates.
+    ranks : Array
+        Ranks of the candidates.
     key : PRNGKey
         Random key.
     reproduction_type_probabilities : Array
         Probability of each reproduction function to be applied.
     reproduction_probability : float
         Probability of a tree to be mutated.
-    tournament_probabilities : Array
-        Probability of each of the ranks in the tournament to be selected for reproduction.
     population_indices : Array
         Indices of the population.
     population_size : int
         Size of the population.
-    tournament_size : int
-        Size of the tournament.
     num_trees : int
         Number of trees in a candidate.
-    elite_size : int
-        Number of candidates that remain in the new population without reproduction.
+    tournament_size : int
+        Number of candidates that compete in a tournament.
     reproduction_functions : List[Callable]
         Functions that can be applied for reproduction.
 
@@ -209,22 +199,20 @@ def evolve_population(population: Array,
     Array
         Evolved population.
     """
+    
     left_key, right_key, repro_key, evo_key = jr.split(key, 4)
-    elite = jnp.argsort(ranks, descending=False)
 
     # Sample parents for reproduction
-    left_parents = jax.vmap(tournament_selection, in_axes=[None, None, None, 0, None, None])(population, 
-                                                                                             metrics, 
+    left_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None])(population, 
                                                                                              ranks,
                                                                                              jr.split(left_key, population_size//2), 
-                                                                                             tournament_size, 
+                                                                                             tournament_size,
                                                                                              population_indices)
     
-    right_parents = jax.vmap(tournament_selection, in_axes=[None, None, None, 0, None, None])(population, 
-                                                                                              metrics, 
+    right_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None])(population, 
                                                                                               ranks,
                                                                                               jr.split(right_key, population_size//2), 
-                                                                                              tournament_size, 
+                                                                                              tournament_size,
                                                                                               population_indices)
     # Sample which reproduction function to apply to the parents
     reproduction_type = jr.choice(repro_key, jnp.arange(3), shape=(population_size//2,), p=reproduction_type_probabilities)
@@ -237,7 +225,6 @@ def evolve_population(population: Array,
                                                                                              reproduction_functions)
     
     evolved_population = jnp.where(ranks[:,None,None,None] == 0, population, jnp.concatenate([left_children, right_children], axis=0))
-    # evolved_population = jnp.where(population_indices[:,None,None,None] < 5, population[elite], jnp.concatenate([left_children, right_children], axis=0))
 
     return evolved_population
 
@@ -261,6 +248,10 @@ def migrate_population(receiver: Array,
         Fitness of the candidates in the receiving population.
     sender_fitness : Array
         Fitness of the candidates in the sending population.
+    receiver_ranks : Array
+        Dominance ranks of candidates in the receiving population.
+    sender_ranks : Array
+        Dominance ranks of candidates in the sending population.
     migration_size : int
         How many candidates are migrated to new population.
     population_indices : Array
@@ -268,8 +259,8 @@ def migrate_population(receiver: Array,
 
     Returns
     -------
-    Tuple[Array, Array]
-        Population after migration and their fitness.
+    Tuple[Array, Array, Array]
+        Population after migration and the corresponding fitness and dominance ranks.
     """
     # Identify the Pareto front of the sender population
     sender_dominated_ranks = jnp.argsort(sender_ranks, descending=False)
@@ -291,8 +282,7 @@ def evolve_populations(jit_evolve_population: Callable,
                        migration_period: int, 
                        migration_size: int, 
                        reproduction_type_probabilities: Array, 
-                       reproduction_probabilities: Array, 
-                       tournament_probabilities: Array) -> Array:
+                       reproduction_probabilities: Array) -> Array:
     """Evolves each population independently.
 
     Parameters
@@ -315,15 +305,13 @@ def evolve_populations(jit_evolve_population: Callable,
         Probability of each reproduction function to be applied.
     reproduction_probabilities : Array
         Probability of a tree to be mutated.
-    tournament_probabilities : Array
-        Probability of each of the ranks in the tournament to be selected for reproduction.
 
     Returns
     -------
     Array
         Evolved populations.
     """
-    num_populations, population_size, num_trees, _, _ = populations.shape
+    num_populations, population_size, _, _, _ = populations.shape
     population_indices = jnp.arange(population_size)
 
     nsga_ranks = jax.vmap(nsga2)(metrics)
@@ -343,11 +331,9 @@ def evolve_populations(jit_evolve_population: Callable,
                                         population_indices)
     
     new_population = jit_evolve_population(populations, 
-                                        metrics, 
                                         nsga_ranks,
                                         jr.split(key, num_populations), 
                                         reproduction_type_probabilities, 
                                         reproduction_probabilities, 
-                                        tournament_probabilities, 
                                         population_indices)
     return new_population

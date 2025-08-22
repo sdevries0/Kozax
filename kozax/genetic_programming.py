@@ -19,7 +19,6 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
 import sympy
-
 from typing import Tuple, Callable
 import time
 
@@ -65,18 +64,14 @@ class GeneticProgramming:
         Maximum number of nodes in a tree.
     device_type : str, optional
         Type of device on which the evaluation and evolution takes place.
-    tournament_size : int, optional
-        Size of the tournament.
-    size_parsimony : float, optional
-        Parsimony factor that increases the fitness of a candidate based on its size.
     constant_sd : float, optional
         Standard deviation to sample constants.
     migration_period : int, optional
         Number of generations after which populations are migrated.
     migration_size : float, optional
         Number of candidates to migrate.
-    elite_size : int, optional
-        Percentage of elite candidates that proceed to the next population.
+    tournament_size: int, optional
+        Size of the tournament.
     constant_optimization_method : str, optional
         Method for optimizing constants. Options are "evolution", "gradient", or None.
     constant_optimization_N_offspring : int, optional
@@ -95,8 +90,6 @@ class GeneticProgramming:
         Decay rate for the step size.
     max_fitness : float, optional
         Maximum fitness value.
-    selection_pressure_factors : Tuple[float], optional
-        The selection pressure for each subpopulation.
     reproduction_probability_factors : Tuple[float], optional
         The reproduction probability for each subpopulation.
     crossover_probability_factors : Tuple[float], optional
@@ -118,12 +111,11 @@ class GeneticProgramming:
                  max_init_depth: int = 4,
                  max_nodes: int = 15,
                  device_type: str = 'cpu',
-                 tournament_size: int = 7, 
                  complexity_objective: bool = False,
                  constant_sd: float = 1.0,
                  migration_period: int = 5,
                  migration_size: float = 10,
-                 elite_size: int = 10,
+                 tournament_size: int = 7,
                  constant_optimization_method: str = None,
                  constant_optimization_N_offspring: int = 50,
                  constant_optimization_steps: int = 1,
@@ -133,7 +125,6 @@ class GeneticProgramming:
                  constant_step_size_init: float = 0.1,
                  constant_step_size_decay: float = 0.99,
                  max_fitness: float = 1e8,
-                 selection_pressure_factors: float | Tuple[float] = (0.9, 0.9),
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
@@ -148,8 +139,10 @@ class GeneticProgramming:
         self.max_init_depth = max_init_depth
         assert max_nodes > 0, "The max number of nodes should be larger than 0"
         self.max_nodes = max_nodes
-        self.num_trees = jnp.sum(self.layer_sizes)
+        self.num_trees = jnp.sum(self.layer_sizes).item()
         assert self.num_trees > 0, "The number of trees should be larger than 0"
+        assert tournament_size > 1, "The tournament size should be larger than 1"
+        self.tournament_size = tournament_size
 
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
@@ -162,17 +155,6 @@ class GeneticProgramming:
         self.migration_period = migration_period
         assert isinstance(migration_size, int), "The migration size should be an integer"
         self.migration_size = migration_size
-
-        assert tournament_size > 1, "The tournament size should be larger than 1"
-        self.tournament_size = tournament_size
-        
-        # Initialize the reproduction hyperparameters for each population
-        if isinstance(selection_pressure_factors, float):
-            selection_pressure_factors = (selection_pressure_factors, selection_pressure_factors)
-        assert (selection_pressure_factors[0] > 0) & (selection_pressure_factors[1] > 0), "The selection pressure should be larger than 0"
-
-        self.selection_pressures = jnp.linspace(*selection_pressure_factors, self.num_populations)
-        self.tournament_probabilities = jnp.array([sp * (1 - sp) ** jnp.arange(self.tournament_size) for sp in self.selection_pressures])
         
         if isinstance(crossover_probability_factors, float):
             crossover_probability_factors = (crossover_probability_factors, crossover_probability_factors)
@@ -196,13 +178,8 @@ class GeneticProgramming:
 
         self.reproduction_probabilities = jnp.linspace(*reproduction_probability_factors, self.num_populations)
 
-        assert elite_size % 2 == 0, "The elite size should be a multiple of two"
-        self.elite_size = elite_size
-
         self.max_fitness = max_fitness
-
-        self.max_complexity = self.num_trees * self.max_nodes
-        self.complexities = jnp.arange(self.max_complexity)
+        self.complexities = jnp.arange(self.num_trees * self.max_nodes)
 
         # Create a mapping from indices in breadth first space to depth first space
         self.map_b_to_d = self.map_breadth_indices_to_depth_indices(jnp.maximum(self.max_init_depth, 3))
@@ -210,7 +187,6 @@ class GeneticProgramming:
         # Define general tree structures
         self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 4))
         self.empty_tree = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (self.max_nodes, 1))
-        self.empty_candidate = jnp.tile(self.empty_tree, (self.num_trees, 1, 1))
 
         self.initialize_node_library(operator_list, variable_list)
 
@@ -254,10 +230,10 @@ class GeneticProgramming:
 
         self.jit_evolve_population = jax.jit(jax.vmap(partial(evolve_population, 
                                                      reproduction_functions=self.reproduction_functions, 
-                                                     tournament_size=self.tournament_size, 
                                                      num_trees=self.num_trees, 
-                                                     population_size=population_size),
-                                                    in_axes=[0, 0, 0, 0, 0, 0, 0, None]))
+                                                     population_size=population_size,
+                                                     tournament_size=self.tournament_size),
+                                                    in_axes=[0, 0, 0, 0, 0, None]))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
@@ -316,6 +292,39 @@ class GeneticProgramming:
         self.jit_optimize = jax.jit(shard_optimize)
 
         self.reset()
+        
+    def _warm_up_jit_functions(self, dummy_population: Array, data: Tuple) -> None:
+        """
+        Warm up JIT compilation with actual data shapes.
+
+        Parameters
+        ----------
+        dummy_population : Array
+            A JAX array representing a sample population with the same
+            shape as will be used in actual evolution.
+        data : Tuple
+            A tuple containing the data used for evaluating fitness functions. This method prints the compilation start and completion time as a diagnostic.
+
+        Returns
+        -------
+        None            
+        """
+
+        print("Compiling code for evaluation and evolution...")
+        start = time.time()
+
+        dummy_key = jr.PRNGKey(0)
+        
+        # Use actual data for compilation
+        flat_populations = dummy_population.reshape(self.num_populations * self.population_size, *dummy_population.shape[2:])
+        dummy_fitness, dummy_population = self.evaluate_population(dummy_population, data, dummy_key)
+
+        self.jit_simplify_constants(dummy_population)
+        
+        # Warm up evolve function
+        dummy_population = self.evolve_population(dummy_population, dummy_fitness, dummy_key)
+        jax.block_until_ready(dummy_population)
+        print(f"Finished compilation in {(time.time() - start):.2f} seconds")
 
     def map_breadth_indices_to_depth_indices(self, depth: int) -> Array:
         """
@@ -449,7 +458,7 @@ class GeneticProgramming:
         self.node_function_list = node_function_list
         self.variable_array = variable_array
 
-    def fit(self, key: PRNGKey, data: Tuple, verbose = False, save_pareto_front = False, save_path = None) -> None:
+    def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None) -> None:
         """
         Fits the genetic programming algorithm to the data.
 
@@ -459,33 +468,48 @@ class GeneticProgramming:
             Data required for evaluation.
         key : PRNGKey
             Random key.
-        verbose : bool, optional
-            Whether to print the best fitness and solution at each generation.
+        verbose : int, optional
+            Whether to print the best fitness and solution at each generation. By choosing a positive integer, you can control the frequency of the output.
         save_pareto_front : bool, optional
             Whether to save the Pareto front to a file.
-        save_path : str, optional
+        path_to_file : str, optional
             Name of the file to save the Pareto front.
         """
+
+        # Check if path exists when saving is requested
+        if save_pareto_front:
+            assert path_to_file is not None, "A file name must be provided when saving the Pareto front"
+            import os
+            # Check if directory exists and create it if needed
+            directory = os.path.dirname(path_to_file)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory)
+
         key, init_key = jr.split(key)
 
         self.reset()
+        
+        # Warm up JIT functions with actual data shapes
+        dummy_population = self.initialize_population(init_key)
+        self._warm_up_jit_functions(dummy_population, data)
 
-        population = self.initialize_population(init_key)
+        population = dummy_population
 
         for g in range(self.num_generations):
             key, eval_key, sample_key = jr.split(key, 3)
             fitness, population = self.evaluate_population(population, data, eval_key)
 
             if verbose:
-                print(f"In generation {g+1}")
-                self.print_pareto_front()
-
-
+                if g % verbose == 0:
+                    print(f"In generation {g+1}")
+                    self.print_pareto_front()
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
 
-        self.print_pareto_front(save_pareto_front, save_path)
+        print("Final pareto front:")
+        self.print_pareto_front(save_pareto_front, path_to_file)
+        # print(eqx.debug.get_num_traces(self.jit_eval))
 
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""
@@ -493,11 +517,7 @@ class GeneticProgramming:
         self.constant_step_size = self.constant_step_size_init
 
         # The Pareto front keeps track of the best solutions at each complexity level
-        self.pareto_front = (self.max_fitness, jnp.zeros((self.num_trees, self.max_nodes, 4)))
-
-    def increase_generation(self) -> None:
-        """Increases the current generation count."""
-        self.current_generation += 1
+        self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 4)))        
 
     def initialize_population(self, key: PRNGKey) -> Array:
         """
@@ -554,13 +574,9 @@ class GeneticProgramming:
                                              self.migration_period, 
                                              self.migration_size, 
                                              self.reproduction_type_probabilities, 
-                                             self.reproduction_probabilities, 
-                                             self.tournament_probabilities)
+                                             self.reproduction_probabilities)
         
-        # for i in range(3):
-        #     print(self.expression_to_string(new_populations[0,i]))
-        
-        self.increase_generation()
+        self.current_generation += 1
         if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
             self.constant_step_size = jnp.maximum(self.constant_step_size * self.constant_step_size_decay, 0.001) #Update step size for constant optimization
         return self.jit_simplify_constants(new_populations)
@@ -756,13 +772,14 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Fitness and evaluated or optimized population.
         """
+
         # Flatten the populations so they can be distributed over the devices
         flat_populations = populations.reshape(self.num_populations * self.population_size, *populations.shape[2:])
         data = jax.device_put(data, self.data_mesh)
 
         fitness = self.jit_eval(flat_populations, data)  # Evaluate the candidates
 
-        # optimize constants of the best candidates in the current generation
+        # Optimize constants of the best candidates in the current generation
         if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
             self.optimizer = self.optimizer_class(self.constant_step_size)
 
@@ -770,7 +787,7 @@ class GeneticProgramming:
             best_candidates_idx = jnp.argsort(fitness)[:self.optimize_constants_elite]
             best_candidates = flat_populations[best_candidates_idx]
 
-            # optimize constants of the best candidates
+            # Optimize constants of the best candidates
             optimized_fitness, optimized_population = self.jit_optimize(best_candidates, data, jr.split(key, self.optimize_constants_elite), self.constant_step_size)
 
             optimized_population = jax.block_until_ready(optimized_population)
@@ -778,9 +795,6 @@ class GeneticProgramming:
             # Store updated candidates and fitness
             flat_populations = flat_populations.at[best_candidates_idx].set(optimized_population)
             fitness = fitness.at[best_candidates_idx].set(optimized_fitness)
-
-            # jax.clear_backends()  # Clear compilation cache
-            # jax.clear_caches()
 
         self.update_pareto_front(fitness, flat_populations)
 
@@ -838,8 +852,9 @@ class GeneticProgramming:
         Returns
         -------
         Tuple[Array, Array]
-            optimized and evaluated candidate.
+            Optimized and evaluated candidate.
         """
+
         states = jax.vmap(self.optimizer.init)(candidates[..., 3:])  # Initialize optimizers for each candidate
 
         _, out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
@@ -867,6 +882,7 @@ class GeneticProgramming:
         Tuple[Tuple[Array, Tuple, PRNGKey], float]
             Tuple containing updated candidate, data, and key, and the best fitness.
         """
+
         candidate, data, key, step_size = carry
 
         key, sample_key = jr.split(key)
@@ -907,6 +923,7 @@ class GeneticProgramming:
         Tuple[float, Array]
             Best fitness and optimized candidate.
         """
+
         (new_candidate, _, _, _), fitness = jax.lax.scan(self.optimize_constants_generation, (candidate, data, key, step_size), length=n_iterations)
 
         return jnp.min(fitness), new_candidate
@@ -927,6 +944,7 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Population and fitness with duplicates punished.
         """
+
         _, indices, counts = jnp.unique(population, return_index=True, return_counts=True, axis=0, size=self.population_size)
         population = population[indices]
         fitness = fitness[indices]
@@ -943,14 +961,18 @@ class GeneticProgramming:
         current_population : Array
             Current population.
         """
+        current_pareto_fitness, current_pareto_solutions = self.pareto_front
+
+        _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
+        _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
+
         # Compute complexity of the current population
-        complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(population)[:,None]
-        metrics = jnp.concatenate([fitness[:,None], complexity], axis=-1)
+        complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_population)[:,None]
+        metrics = jnp.concatenate([_fitness[:,None], complexity], axis=-1)
 
         # For each solution i, check if it's dominated by any other solution j
         
-        # Reshape metrics for broadcasting
-        # Shape: (n_solutions, 1, n_objectives)
+        # Reshape metrics for broadcasting. Shape: (n_solutions, 1, n_objectives)
         metrics_i = jnp.expand_dims(metrics, axis=1)
         
         # Shape: (1, n_solutions, n_objectives)
@@ -974,11 +996,11 @@ class GeneticProgramming:
         
         pareto_indices = jnp.nonzero(dominated_by_others)[0]
 
-        pareto_solutions, unique_indices = jnp.unique(population[pareto_indices], return_index=True, axis=0)
+        pareto_solutions, unique_indices = jnp.unique(_population[pareto_indices], return_index=True, axis=0)
 
-        self.pareto_front = (fitness[pareto_indices][unique_indices], pareto_solutions)
+        self.pareto_front = (_fitness[pareto_indices][unique_indices], pareto_solutions)
 
-    def print_pareto_front(self, save: bool = False, file_name: str = None) -> None:
+    def print_pareto_front(self, save: bool = False, path_to_file: str = None) -> None:
         """
         Prints the Pareto front.
 
@@ -986,9 +1008,19 @@ class GeneticProgramming:
         ----------
         save : bool, optional
             Whether to save the Pareto front to a file.
-        file_name : str, optional
+        path_to_file : str, optional
             Name of the file to save the Pareto front.
         """
+
+        # Check if path exists when saving is requested
+        if save:
+            assert path_to_file is not None, "A file name must be provided when saving the Pareto front"
+            import os
+            # Check if directory exists and create it if needed
+            directory = os.path.dirname(path_to_file)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory)
+
         pareto_fitness, pareto_solutions = self.pareto_front
 
         complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
@@ -1025,7 +1057,7 @@ class GeneticProgramming:
                         pareto_table.append((complexities[c], pareto_fitness[c], string_equations))
 
         if save:
-            np.savetxt(f'{file_name}.csv', pareto_table, delimiter=',', fmt='%s')
+            np.savetxt(f'{path_to_file}/pareto_front.csv', pareto_table, delimiter=',', fmt='%s')
     
     def tree_to_string(self, tree: Array) -> str:
         """
@@ -1041,6 +1073,7 @@ class GeneticProgramming:
         str
             String representation of tree.
         """
+
         if tree[-1, 0] == 1:  # constant
             return str(tree[-1, 3])
         elif tree[-1, 1] < 0:  # Variable
