@@ -426,12 +426,16 @@ class GeneticProgramming:
                 else:
                     var = var_or_tuple[0]
                 if var not in string_to_node:
-                    string_to_node[var] = index
-                    node_to_string[index] = var
-                    node_function_list.append(lambda_leaf(data_index))
-                    n_operands.append(0) #Leaf nodes have no children
-                    index += 1
-                    data_index += 1
+                    try:
+                        sympy.parsing.sympy_parser.parse_expr(f"1.0*{var}"), "Variable is not a valid expression"
+                        string_to_node[var] = index
+                        node_to_string[index] = var
+                        node_function_list.append(lambda_leaf(data_index))
+                        n_operands.append(0) #Leaf nodes have no children
+                        index += 1
+                        data_index += 1
+                    except:
+                        raise ValueError(f"Variable {var} is not a valid expression. Please use a valid expression or remove it from the variable list.")
         
         self.variable_indices = jnp.arange(var_start_index, index) #Store the indices corresponding to leaf nodes
         variable_array = jnp.zeros((self.num_trees, data_index))
@@ -750,9 +754,10 @@ class GeneticProgramming:
             Result of each tree.
         """
 
-        data = jnp.atleast_1d(data)
+        # data = jnp.atleast_1d(data)
         result = jax.vmap(self.iterate_through_tree, in_axes=[0, None])(candidate, data) #Evaluate each tree in the candidate
-        return jnp.squeeze(result)
+        # return jnp.squeeze(result)
+        return result
 
     def evaluate_population(self, populations: Array, data: Tuple, key: PRNGKey) -> Tuple[Array, Array]:
         """

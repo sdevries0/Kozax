@@ -75,7 +75,7 @@ class LorenzAttractor(EnvironmentBase):
         :class:`jax.Array`
             Initial states.
         """
-        return self.init_mu + self.init_sd * jrandom.normal(key, shape=(batch_size, 3))
+        return self.init_mu + self.init_sd * jrandom.normal(key, shape=(batch_size, self.n_var))
 
     def drift(self, t: float, state: Array, args: Tuple = jnp.array([0.0])) -> Array:
         """

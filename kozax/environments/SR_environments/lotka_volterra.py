@@ -78,7 +78,7 @@ class LotkaVolterra(EnvironmentBase):
         :class:`jax.Array`
             Initial states.
         """
-        return jrandom.uniform(key, shape=(batch_size, 2), minval=5, maxval=15)
+        return jrandom.uniform(key, shape=(batch_size, self.n_var), minval=5, maxval=15)
     
     def drift(self, t: float, state: Array, args: float = jnp.array([0.0])) -> Array:
         """
