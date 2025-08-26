@@ -190,7 +190,7 @@ class GeneticProgramming:
 
         self.initialize_node_library(operator_list, variable_list)
 
-        print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices]}.")
+        print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices[1:]]}.")
 
         # Define jittable reproduction functions
         self.sample_args = (self.variable_indices, 
@@ -419,7 +419,8 @@ class GeneticProgramming:
         assert len(self.layer_sizes) == len(variable_list), "There is not a set of expressions for every type of layer"
 
         for var_list in variable_list:
-            assert len(var_list) > 0, "An empty set of variables was given"
+            if len(var_list) == 0:
+                continue     
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
                     var = var_or_tuple
@@ -437,12 +438,13 @@ class GeneticProgramming:
                     except:
                         raise ValueError(f"Variable {var} is not a valid expression. Please use a valid expression or remove it from the variable list.")
         
-        self.variable_indices = jnp.arange(var_start_index, index) #Store the indices corresponding to leaf nodes
-        variable_array = jnp.zeros((self.num_trees, data_index))
+        self.variable_indices = jnp.concatenate([jnp.array([1]), jnp.arange(var_start_index, index)]) #Store the indices corresponding to leaf nodes
+        variable_array = jnp.zeros((self.num_trees, data_index + 1))
 
         counter = 0
         for layer_i, var_list in enumerate(variable_list):
-            p = jnp.zeros((data_index))
+            p = jnp.zeros((data_index + 1))
+            p = p.at[0].set(0.1)
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
                     var = var_or_tuple
@@ -450,7 +452,7 @@ class GeneticProgramming:
                 else:
                     var = var_or_tuple[0]
                     var_p = var_or_tuple[1]
-                p = p.at[string_to_node[var] - var_start_index].set(var_p)
+                p = p.at[string_to_node[var] - var_start_index + 1].set(var_p)
 
             for _ in range(self.layer_sizes[layer_i]):
                 variable_array = variable_array.at[counter].set(p)
@@ -461,6 +463,8 @@ class GeneticProgramming:
         self.node_to_string = node_to_string
         self.node_function_list = node_function_list
         self.variable_array = variable_array
+
+        print(self.variable_indices, self.variable_array)
 
     def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None) -> None:
         """

@@ -37,7 +37,7 @@ def sample_node(i: int,
 
     depth = (jnp.log(i + 1 + 1e-10) / jnp.log(2)).astype(int)  # Compute depth of node
     coefficient = jr.normal(coefficient_key) * coefficient_sd
-    leaf = jax.lax.select(jr.uniform(leaf_key) < 0.5, 1, jr.choice(variable_key, variable_indices, shape=(), p=variable_array))  # Sample coefficient or variable
+    leaf = jr.choice(variable_key, variable_indices, shape=(), p=variable_array)  # Sample coefficient or variable
 
     index = jax.lax.select((open_slots < max_nodes - i - 1) & (depth + 1 < max_init_depth),  # Check if max depth has been reached, or if the number of open slots reached the max number of nodes
                            jax.lax.select(jr.uniform(node_key) < (0.7 ** depth),  # At higher depth, a leaf node is more probable
