@@ -222,7 +222,7 @@ class HarmonicOscillator(EnvironmentBase):
         x_d = jnp.array([jnp.squeeze(target), 0])
         u_d = -jnp.linalg.pinv(self.b) @ self.A @ x_d
         costs = jax.vmap(lambda _state, _u: (_state - x_d).T @ self.Q @ (_state - x_d) + (_u - u_d) @ self.R @ (_u - u_d))(state, control)
-        return jnp.sum(costs)
+        return jnp.mean(costs)
     
     def cond_fn_nan(self, t: float, y: Array, args: Tuple, **kwargs) -> float:
         """

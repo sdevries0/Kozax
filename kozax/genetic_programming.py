@@ -86,8 +86,6 @@ class GeneticProgramming:
         optimizer for constant optimization.
     constant_step_size_init : float, optional
         Initial step size for the optimizer.
-    constant_step_size_decay : float, optional
-        Decay rate for the step size.
     max_fitness : float, optional
         Maximum fitness value.
     reproduction_probability_factors : Tuple[float], optional
@@ -123,7 +121,6 @@ class GeneticProgramming:
                  optimize_constants_elite: int = 100,
                  optimizer_class = optax.adam,
                  constant_step_size_init: float = 0.1,
-                 constant_step_size_decay: float = 0.99,
                  max_fitness: float = 1e8,
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
@@ -252,7 +249,6 @@ class GeneticProgramming:
         
         # Define hyperparameters for constant optimization
         self.constant_step_size_init = constant_step_size_init
-        self.constant_step_size_decay = constant_step_size_decay
         self.optimize_constants_elite = optimize_constants_elite
         self.start_constant_optimization = start_constant_optimization
         self.optimizer_class = optimizer_class
@@ -585,8 +581,6 @@ class GeneticProgramming:
                                              self.reproduction_probabilities)
         
         self.current_generation += 1
-        if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
-            self.constant_step_size = jnp.maximum(self.constant_step_size * self.constant_step_size_decay, 0.001) #Update step size for constant optimization
         return self.jit_simplify_constants(new_populations)
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
@@ -1061,7 +1055,7 @@ class GeneticProgramming:
                     temp = (complexity, pareto_fitness[c])
                     for tree in string_equations:
                         temp += (tree,)
-                        pareto_table.append(temp)
+                    pareto_table.append(temp)
                 else:
                     pareto_table.append((complexity, pareto_fitness[c], string_equations))
             
