@@ -460,8 +460,6 @@ class GeneticProgramming:
         self.node_function_list = node_function_list
         self.variable_array = variable_array
 
-        print(self.variable_indices, self.variable_array)
-
     def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None) -> None:
         """
         Fits the genetic programming algorithm to the data.
