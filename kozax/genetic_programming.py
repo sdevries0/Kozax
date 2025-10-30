@@ -503,6 +503,8 @@ class GeneticProgramming:
 
         key, init_key = jr.split(key)
 
+        best_fitnesses = []
+
         self.reset()
 
         # Warm up JIT functions with actual data shapes
@@ -515,6 +517,8 @@ class GeneticProgramming:
             key, eval_key, sample_key = jr.split(key, 3)
             fitness, population = self.evaluate_population(population, data, eval_key)
 
+            best_fitnesses.append(jnp.min(fitness))
+
             if verbose:
                 if g % verbose == 0:
                     print(f"In generation {g+1}")
@@ -525,6 +529,7 @@ class GeneticProgramming:
 
         print("Final pareto front:")
         self.print_pareto_front(save_pareto_front, path_to_file)
+        return best_fitnesses
 
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""
