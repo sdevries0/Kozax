@@ -23,6 +23,12 @@ def run_experiment(args, operator_list=None, reward_fn=None, save_path=None):
 
     env = HarmonicOscillator(process_noise, obs_noise, n_obs)
 
+    # Evaluation parameters
+    state_size = 2
+    layer_sizes = jnp.array([state_size, env.n_control_inputs])
+    dt0 = 0.02
+    max_steps = 2000
+
     # GP parameters
     num_generations = args.get("num_generations")
     population_size = args.get("population_size")
@@ -47,12 +53,6 @@ def run_experiment(args, operator_list=None, reward_fn=None, save_path=None):
     else:
         for var_list in variable_list:
             var_list.append("r")
-
-    # Evaluation parameters
-    state_size = 2
-    layer_sizes = jnp.array([state_size, env.n_control_inputs])
-    dt0 = 0.02
-    max_steps = 2000
 
     fitness_function = SHOEvaluator(env, state_size, dt0, reward_fn=reward_fn, solver=diffrax.GeneralShARK(), max_steps=max_steps)
     strategy = GeneticProgramming(
