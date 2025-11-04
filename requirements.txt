@@ -1,0 +1,7 @@
+diffrax==0.7.0
+gymnax==0.0.9
+jax==0.4.38
+jaxtyping==0.3.3
+numpy==2.3.4
+optax==0.2.5
+sympy==1.14.0
