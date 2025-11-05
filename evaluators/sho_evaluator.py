@@ -54,7 +54,8 @@ class SHOEvaluator(BaseEvaluator):
         _, ys = jax.lax.scan(env.f_obs, obs_noise_key, (ts, xs))
 
         if self.reward_fn is not None:
-            rs = jax.vmap(self.reward_fn)(ts, xs, target)
+            target_t = jnp.reshape(target, (-1, 1))
+            rs = jax.vmap(self.reward_fn, in_axes=(0, 0, 0))(ts, xs, target_t)
             feedback = rs
         else:
             rs = jnp.zeros((xs.shape[0],))
@@ -73,9 +74,8 @@ class SHOEvaluator(BaseEvaluator):
         _, y = env.f_obs(obs_noise_key, (t, x))
         target_t = jnp.atleast_1d(target_interp.evaluate(t))
         if self.reward_fn is not None:
-            r = jnp.atleast_1d(self.reward_fn(t, x, target_t.squeeze()))
-            u = tree_evaluator(readout, jnp.concatenate(
-                [jnp.zeros(self.obs_size), a, jnp.zeros(self.control_size), r])
+            r = jnp.atleast_1d(self.reward_fn(t, x, target_t))
+            u = tree_evaluator(readout, jnp.concatenate([jnp.zeros(self.obs_size), a, jnp.zeros(self.control_size), r])
             )
             dx = env.drift(t, x, jnp.atleast_1d(u))
             da = tree_evaluator(state_equation, jnp.concatenate([y, a, jnp.atleast_1d(u), r]))
