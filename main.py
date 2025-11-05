@@ -24,7 +24,7 @@ def run_experiment(args, operator_list=None, reward_fn=None, save_path=None, dev
     state_size = 2
     layer_sizes = jnp.array([state_size, env.n_control_inputs])
     dt0 = 0.05
-    max_steps = 1000
+    max_steps = 2000
 
     # GP parameters
     num_generations = args.get("num_generations")
@@ -33,9 +33,9 @@ def run_experiment(args, operator_list=None, reward_fn=None, save_path=None, dev
     if operator_list is None:
         operator_list = [
             ("+", lambda x, y: jnp.add(x, y), 2, 0.5),
-            ("*", lambda x, y: jnp.multiply(x, y), 2, 0.3),
-            ("-", lambda x, y: jnp.subtract(x, y), 2, 0.5),
-            # ("/", lambda x, y: jnp.divide(x, y), 2, 0.1),
+            ("*", lambda x, y: jnp.multiply(x, y), 2, 0.5),
+            ("-", lambda x, y: jnp.subtract(x, y), 2, 0.3),
+            ("/", lambda x, y: jnp.divide(x, y), 2, 0.1)
         ]
     variable_list = [
         # Latent memory
