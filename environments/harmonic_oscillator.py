@@ -1,19 +1,19 @@
-import diffrax
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import diffrax
 
 from .base_environment import EnvironmentBase
 
 
 class HarmonicOscillator(EnvironmentBase):
-    def __init__(self, process_noise=0.0, obs_noise=0.0, n_obs=2):
+    def __init__(self, process_noise, obs_noise, n_obs=2):
         self.n_dim = 1
         self.n_var = 2
         self.n_control_inputs = 1
         self.n_targets = 1
         self.mu0 = jnp.zeros(self.n_var)
-        self.P0 = jnp.eye(self.n_var) * jnp.array([3.0, 1.0])
+        self.P0 = jnp.eye(self.n_var) * jnp.array([2.0, 1.0])
         super().__init__(process_noise, obs_noise, self.n_var, self.n_control_inputs, self.n_dim, n_obs)
 
         self.q = self.r = 0.5
@@ -35,7 +35,6 @@ class HarmonicOscillator(EnvironmentBase):
             mask = jnp.arange(len(ts)) % interval == 0
             targets = jax.vmap(lambda base, jump: base + jnp.cumsum(jump * mask))(base_target, jumps)
             targets = targets[:, :, None]
-
         return x0, targets
 
     def sample_params(self, batch_size, mode, ts, key):
@@ -44,12 +43,12 @@ class HarmonicOscillator(EnvironmentBase):
             omegas = jnp.ones((batch_size, ts.shape[0]))
             zetas = jnp.zeros((batch_size, ts.shape[0]))
         elif mode == "different":
-            omegas = jrandom.uniform(omega_key, shape=(batch_size,), minval=0.0, maxval=2.0)[:, None] * jnp.ones((batch_size, ts.shape[0]))
-            zetas = jrandom.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.5)[:, None] * jnp.ones((batch_size, ts.shape[0]))
+            omegas = jrandom.uniform(omega_key, (batch_size,), minval=0.0, maxval=2.0)[:, None] * jnp.ones((batch_size, ts.shape[0]))
+            zetas = jrandom.uniform(zeta_key, (batch_size,), minval=0.0, maxval=1.5)[:, None] * jnp.ones((batch_size, ts.shape[0]))
         elif mode == "changing":
-            decay_factors = jrandom.uniform(args_key, shape=(batch_size, 2), minval=0.98, maxval=1.02)
-            init_omegas = jrandom.uniform(omega_key, shape=(batch_size,), minval=0.5, maxval=1.5)
-            init_zetas = jrandom.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.0)
+            decay_factors = jrandom.uniform(args_key, (batch_size, 2), minval=0.98, maxval=1.02)
+            init_omegas = jrandom.uniform(omega_key, (batch_size,), minval=0.5, maxval=1.5)
+            init_zetas = jrandom.uniform(zeta_key, (batch_size,), minval=0.0, maxval=1.0)
             omegas = jax.vmap(lambda o, d, t: o * (d ** t), in_axes=[0, 0, None])(init_omegas, decay_factors[:, 0], ts)
             zetas = jax.vmap(lambda z, d, t: z * (d ** t), in_axes=[0, 0, None])(init_zetas, decay_factors[:, 1], ts)
         return omegas, zetas
@@ -72,7 +71,7 @@ class HarmonicOscillator(EnvironmentBase):
 
     def fitness_function(self, state, control, target, ts):
         target = jnp.squeeze(target)
-        x_d = jnp.stack([target, jnp.zeros_like(target)], axis=-1)
+        x_d = jnp.stack([target, jnp.zeros_like(target)], axis=1)
         u_d = jax.vmap(lambda t, xd: -jnp.linalg.pinv(self.b) @ self.A.evaluate(t) @ xd)(ts, x_d)
         costs = jax.vmap(
             lambda _state, _u, _xd, _ud: (_state - _xd) @ self.Q @ (_state - _xd) + (_u - _ud) @ self.R @ (_u - _ud)
