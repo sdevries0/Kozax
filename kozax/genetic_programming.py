@@ -7,7 +7,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 """
 
 import jax
-print("These device(s) are detected: ", jax.devices())
+print("These device(s) are detected:", jax.devices())
 from jax import Array
 
 import jax.numpy as jnp
@@ -15,7 +15,7 @@ import jax.random as jr
 from jax.random import PRNGKey
 import optax
 from functools import partial
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
 import sympy
@@ -269,7 +269,7 @@ class GeneticProgramming:
             self.constant_optimization = False
 
         # Define sharded functions for evaluation and optimization
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_rep=False)
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'))
         def shard_eval(array, data):
             fitness = self.vmap_trees(array[..., 3:], array[..., :3], data)
 
@@ -279,7 +279,7 @@ class GeneticProgramming:
             
             return jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
             
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')), check_rep=False)
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')))
         def shard_optimize(array, data, keys, step_size):
             result, _array = self.optimize_constants_function(array, data, keys, step_size)
             return result, _array
