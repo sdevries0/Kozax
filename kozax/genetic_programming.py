@@ -7,7 +7,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 """
 
 import jax
-print("These device(s) are detected: ", jax.devices())
+print("These device(s) are detected:", jax.devices())
 from jax import Array
 
 import jax.numpy as jnp
@@ -15,7 +15,7 @@ import jax.random as jr
 from jax.random import PRNGKey
 import optax
 from functools import partial
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
 import sympy
@@ -86,8 +86,6 @@ class GeneticProgramming:
         optimizer for constant optimization.
     constant_step_size_init : float, optional
         Initial step size for the optimizer.
-    constant_step_size_decay : float, optional
-        Decay rate for the step size.
     max_fitness : float, optional
         Maximum fitness value.
     reproduction_probability_factors : Tuple[float], optional
@@ -123,7 +121,6 @@ class GeneticProgramming:
                  optimize_constants_elite: int = 100,
                  optimizer_class = optax.adam,
                  constant_step_size_init: float = 0.1,
-                 constant_step_size_decay: float = 0.99,
                  max_fitness: float = 1e8,
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
@@ -190,7 +187,7 @@ class GeneticProgramming:
 
         self.initialize_node_library(operator_list, variable_list)
 
-        print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices]}.")
+        print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices[1:]]}.")
 
         # Define jittable reproduction functions
         self.sample_args = (self.variable_indices, 
@@ -252,7 +249,6 @@ class GeneticProgramming:
         
         # Define hyperparameters for constant optimization
         self.constant_step_size_init = constant_step_size_init
-        self.constant_step_size_decay = constant_step_size_decay
         self.optimize_constants_elite = optimize_constants_elite
         self.start_constant_optimization = start_constant_optimization
         self.optimizer_class = optimizer_class
@@ -273,7 +269,7 @@ class GeneticProgramming:
             self.constant_optimization = False
 
         # Define sharded functions for evaluation and optimization
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_rep=False)
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'))
         def shard_eval(array, data):
             fitness = self.vmap_trees(array[..., 3:], array[..., :3], data)
 
@@ -283,7 +279,7 @@ class GeneticProgramming:
             
             return jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
             
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')), check_rep=False)
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')))
         def shard_optimize(array, data, keys, step_size):
             result, _array = self.optimize_constants_function(array, data, keys, step_size)
             return result, _array
@@ -419,7 +415,8 @@ class GeneticProgramming:
         assert len(self.layer_sizes) == len(variable_list), "There is not a set of expressions for every type of layer"
 
         for var_list in variable_list:
-            assert len(var_list) > 0, "An empty set of variables was given"
+            if len(var_list) == 0:
+                continue     
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
                     var = var_or_tuple
@@ -437,12 +434,13 @@ class GeneticProgramming:
                     except:
                         raise ValueError(f"Variable {var} is not a valid expression. Please use a valid expression or remove it from the variable list.")
         
-        self.variable_indices = jnp.arange(var_start_index, index) #Store the indices corresponding to leaf nodes
-        variable_array = jnp.zeros((self.num_trees, data_index))
+        self.variable_indices = jnp.concatenate([jnp.array([1]), jnp.arange(var_start_index, index)]) #Store the indices corresponding to leaf nodes
+        variable_array = jnp.zeros((self.num_trees, data_index + 1))
 
         counter = 0
         for layer_i, var_list in enumerate(variable_list):
-            p = jnp.zeros((data_index))
+            p = jnp.zeros((data_index + 1))
+            p = p.at[0].set(0.1)
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
                     var = var_or_tuple
@@ -450,7 +448,7 @@ class GeneticProgramming:
                 else:
                     var = var_or_tuple[0]
                     var_p = var_or_tuple[1]
-                p = p.at[string_to_node[var] - var_start_index].set(var_p)
+                p = p.at[string_to_node[var] - var_start_index + 1].set(var_p)
 
             for _ in range(self.layer_sizes[layer_i]):
                 variable_array = variable_array.at[counter].set(p)
@@ -581,8 +579,6 @@ class GeneticProgramming:
                                              self.reproduction_probabilities)
         
         self.current_generation += 1
-        if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
-            self.constant_step_size = jnp.maximum(self.constant_step_size * self.constant_step_size_decay, 0.001) #Update step size for constant optimization
         return self.jit_simplify_constants(new_populations)
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
@@ -1057,7 +1053,7 @@ class GeneticProgramming:
                     temp = (complexity, pareto_fitness[c])
                     for tree in string_equations:
                         temp += (tree,)
-                        pareto_table.append(temp)
+                    pareto_table.append(temp)
                 else:
                     pareto_table.append((complexity, pareto_fitness[c], string_equations))
             

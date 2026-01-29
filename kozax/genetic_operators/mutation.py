@@ -76,9 +76,9 @@ def sample_leaf_node(carry: Tuple[Array, PRNGKey, int, int, Array, Array]) -> Tu
     tree, key, _, _, variable_array, variable_indices = carry
     key, select_key, sample_key, variable_key = jr.split(key, 4)
     node_ids = tree[:, 0]
-    is_leaf = (node_ids == 1) | jnp.isin(node_ids, variable_indices)
+    is_leaf = jnp.isin(node_ids, variable_indices)
     mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=is_leaf * 1.0)
-    new_leaf = jax.lax.select(jr.uniform(sample_key) < 0.5, 1, jr.choice(variable_key, variable_indices, shape=(), p=variable_array))
+    new_leaf = jr.choice(variable_key, variable_indices, shape=(), p=variable_array)
     return (tree, key, mutate_idx, new_leaf, variable_array, variable_indices)
 
 def check_equal_leaves(carry: Tuple[Array, PRNGKey, int, int, Array, Array]) -> bool:
@@ -166,7 +166,7 @@ def add_subtree(tree: Array,
 
     # Sample node to be mutated
     node_ids = tree[:, 0]
-    is_leaf = (node_ids == 1) | jnp.isin(node_ids, variable_indices)
+    is_leaf = jnp.isin(node_ids, variable_indices)
     mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=is_leaf * 1.0)
     subtree = sample_tree(sample_key, jnp.minimum(max_init_depth, 2), variable_array)
     subtree_size = jnp.sum(subtree[:, 0] != 0)
@@ -215,9 +215,9 @@ def mutate_leaf(tree: Array,
 
     # Sample node to be mutated
     node_ids = tree[:, 0]
-    is_leaf = (node_ids == 1) | jnp.isin(node_ids, variable_indices)
+    is_leaf = jnp.isin(node_ids, variable_indices)
     mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=is_leaf * 1.0)
-    new_leaf = jax.lax.select(jr.uniform(sample_key) < 0.5, 1, jr.choice(variable_key, variable_indices, shape=(), p=variable_array))
+    new_leaf = jr.choice(variable_key, variable_indices, shape=(), p=variable_array)
     coefficient = jr.normal(coefficient_key) * coefficient_sd
 
     # Check that the old and new leaf node are different
@@ -430,7 +430,7 @@ def delete_operator(tree: Array,
     remaining_size = end_idx - jnp.sum(tree[:, 0] == 0) + 1  # Size of the subtree that should be preserved in the tree
 
     coefficient = jr.normal(coefficient_key) * coefficient_sd
-    new_leaf = jax.lax.select(jr.uniform(sample_key) < 0.5, 1, jr.choice(variable_key, variable_indices, shape=(), p=variable_array))  # Sample coefficient or variable
+    new_leaf = jr.choice(variable_key, variable_indices, shape=(), p=variable_array)  # Sample coefficient or variable
 
     child = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (max_nodes, 1))
     child = jnp.where(tree_indices > delete_idx, tree, child)  # Insert nodes before the mutation index in the new tree

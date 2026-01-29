@@ -119,4 +119,4 @@ class LotkaVolterra(EnvironmentBase):
         :class:`jax.Array`
             Diffusion.
         """
-        return self.V
+        return self.V@state
