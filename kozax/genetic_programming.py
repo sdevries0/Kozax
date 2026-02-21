@@ -131,6 +131,8 @@ class GeneticProgramming:
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
         assert population_size > 0 and population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
+        if constant_optimization_method:
+            assert (population_size * num_populations) > optimize_constants_elite, "The number of candidates to which parameter optimization is applied to is larger than the total population size"
         self.population_size = population_size
         assert max_init_depth > 0, "The max initial depth should be larger than 0"
         self.max_init_depth = max_init_depth
@@ -511,7 +513,6 @@ class GeneticProgramming:
 
         print("Final pareto front:")
         self.print_pareto_front(save_pareto_front, path_to_file)
-        # print(eqx.debug.get_num_traces(self.jit_eval))
 
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""
@@ -1040,7 +1041,6 @@ class GeneticProgramming:
         expression_strings = []
 
         # Group solutions by complexity and get the best fitness for each
-        unique_complexities = jnp.unique(complexities)
         printed_complexities = set()  # Track which complexity levels we've printed
 
         for c in range(complexities.shape[0]):
