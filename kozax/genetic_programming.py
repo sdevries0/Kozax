@@ -232,7 +232,7 @@ class GeneticProgramming:
                                                      num_trees=self.num_trees, 
                                                      population_size=population_size,
                                                      tournament_size=self.tournament_size),
-                                                    in_axes=[0, 0, 0, 0, 0, None]))
+                                                    in_axes=[0, 0, 0, 0, 0, None]), donate_argnums=(0,1))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
@@ -271,7 +271,7 @@ class GeneticProgramming:
             self.constant_optimization = False
 
         # Define sharded functions for evaluation and optimization
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'))
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_vma=False)
         def shard_eval(array, data):
             fitness = self.vmap_trees(array[..., 3:], array[..., :3], data)
 
@@ -281,7 +281,7 @@ class GeneticProgramming:
             
             return jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
             
-        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')))
+        @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None), P('i'), P()), out_specs=(P('i'), P('i')), check_vma=False)
         def shard_optimize(array, data, keys, step_size):
             result, _array = self.optimize_constants_function(array, data, keys, step_size)
             return result, _array
@@ -708,6 +708,7 @@ class GeneticProgramming:
 
         x = tree[a_idx.astype(int), 3]  # Value of first operand
         y = tree[b_idx.astype(int), 3]  # Value of second operand
+
         value = jax.lax.select(f_idx == 1, constant, jax.lax.switch(f_idx.astype(int), node_function_list, x, y, data))  # Computes value of the node
 
         tree = tree.at[i, 3].set(value)  # Store value
@@ -730,7 +731,7 @@ class GeneticProgramming:
         Array
             Value of the root node.
         """
-
+        
         x, _ = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data)) #Iterate over the tree to compute the value of each node
         return x[-1, -1] #Return the value of the root node
 
@@ -750,10 +751,7 @@ class GeneticProgramming:
         Array
             Result of each tree.
         """
-
-        # data = jnp.atleast_1d(data)
         result = jax.vmap(self.iterate_through_tree, in_axes=[0, None])(candidate, data) #Evaluate each tree in the candidate
-        # return jnp.squeeze(result)
         return result
 
     def evaluate_population(self, populations: Array, data: Tuple, key: PRNGKey) -> Tuple[Array, Array]:
@@ -779,7 +777,7 @@ class GeneticProgramming:
         flat_populations = populations.reshape(self.num_populations * self.population_size, *populations.shape[2:])
         data = jax.device_put(data, self.data_mesh)
 
-        fitness = self.jit_eval(flat_populations, data)  # Evaluate the candidates
+        fitness = self.jit_eval(flat_populations, data) # Evaluate the candidates
 
         # Optimize constants of the best candidates in the current generation
         if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
@@ -789,9 +787,14 @@ class GeneticProgramming:
             best_candidates_idx = jnp.argsort(fitness)[:self.optimize_constants_elite]
             best_candidates = flat_populations[best_candidates_idx]
 
-            # Optimize constants of the best candidates
-            optimized_fitness, optimized_population = self.jit_optimize(best_candidates, data, jr.split(key, self.optimize_constants_elite), self.constant_step_size)
-
+            # Optimize constants of the best candidates with profiling
+            optimized_fitness, optimized_population = self.jit_optimize(
+                best_candidates, 
+                data, 
+                jr.split(key, self.optimize_constants_elite), 
+                self.constant_step_size
+                )
+            
             optimized_population = jax.block_until_ready(optimized_population)
 
             # Store updated candidates and fitness
