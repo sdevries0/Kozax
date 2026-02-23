@@ -215,7 +215,7 @@ strategy.fit(gp_key, data, verbose=True)
 data = get_data(jr.PRNGKey(10), env, 4, 0.01, T, param_setting)
 x0s, ts, targets, noise_key, params = data
 
-best_candidate = strategy.pareto_front[1][17]
+best_candidate = strategy.pareto_front[1][jnp.argmin(strategy.pareto_front[0])]
 print(strategy.expression_to_string(best_candidate))
 
 xs, ys, us, activities, fitness = jax.vmap(fitness_function.evaluate_trajectory, in_axes=[None, 0, None, 0, 0, 0, None])(best_candidate, *data, strategy.tree_evaluator)

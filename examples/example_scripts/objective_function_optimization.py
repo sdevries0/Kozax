@@ -189,9 +189,9 @@ if __name__ == "__main__":
     key = jr.PRNGKey(0)
     data_key, gp_key = jr.split(key)
 
-    population_size = 50
+    population_size = 100
     num_populations = 5
-    num_generations = 25
+    num_generations = 15
 
     operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.5), 
                     ("-", lambda x, y: jnp.subtract(x, y), 2, 0.5),
@@ -205,10 +205,10 @@ if __name__ == "__main__":
     hidden_dim = 16
     output_dim = 1
 
-    fitness_function = FitnessFunction(input_dim, hidden_dim, output_dim, learning_rate=0.01, epochs=100)
+    fitness_function = FitnessFunction(input_dim, hidden_dim, output_dim, learning_rate=0.01, epochs=150)
 
     strategy = GeneticProgramming(num_generations, population_size, fitness_function, operator_list, variable_list, num_populations = num_populations)
 
     data_keys, test_keys, network_keys = generate_keys(data_key)
 
-    strategy.fit(gp_key, (data_keys, test_keys, network_keys), verbose=True)
+    strategy.fit(gp_key, (data_keys, test_keys, network_keys), verbose=5)

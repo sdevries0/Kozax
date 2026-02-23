@@ -178,7 +178,7 @@ if __name__ == "__main__":
     
     #Define hyperparameters
     population_size = 100
-    num_populations = 10
+    num_populations = 5
     num_generations = 50
     state_size = 2
 
