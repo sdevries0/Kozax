@@ -287,7 +287,7 @@ class GeneticProgramming:
             return result, _array
         
         self.jit_eval = jax.jit(shard_eval)
-        self.jit_optimize = jax.jit(shard_optimize)
+        self.jit_optimize = jax.jit(shard_optimize, donate_argnums = (0))
 
         self.reset()
         
