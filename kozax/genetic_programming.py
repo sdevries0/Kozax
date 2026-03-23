@@ -72,20 +72,16 @@ class GeneticProgramming:
         Number of candidates to migrate.
     tournament_size: int, optional
         Size of the tournament.
-    constant_optimization_method : str, optional
-        Method for optimizing constants. Options are "evolution", "gradient", or None.
-    constant_optimization_N_offspring : int, optional
-        Number of offspring for Evolution Strategies.
+    constant_optimization_method : bool, optional
+        If constant optimization should be applied during evolution.
     constant_optimization_steps : int, optional
         The number of iterations to optimize the constants.
-    start_constant_optimization : int, optional
-        After which generation the optimization of constants should start.
     optimize_constants_elite : int, optional
         The number of the best candidates of which the constants are optimized.
     optimizer_class : optional
         optimizer for constant optimization.
-    constant_step_size_init : float, optional
-        Initial step size for the optimizer.
+    constant_step_size : float, optional
+        Value of the step size for the optimizer.
     max_fitness : float, optional
         Maximum fitness value.
     reproduction_probability_factors : Tuple[float], optional
@@ -114,25 +110,23 @@ class GeneticProgramming:
                  migration_period: int = 5,
                  migration_size: float = 10,
                  tournament_size: int = 7,
-                 constant_optimization_method: str = None,
-                 constant_optimization_N_offspring: int = 50,
+                 constant_optimization: bool = False,
                  constant_optimization_steps: int = 1,
-                 start_constant_optimization: int = 0,
                  optimize_constants_elite: int = 100,
                  optimizer_class = optax.adam,
-                 constant_step_size_init: float = 0.1,
+                 constant_step_size: float = 0.1,
                  max_fitness: float = 1e8,
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
                  sample_probability_factors: float | Tuple[float] = (0.0, 0.0)) -> None:
-        
+        print("test")
         self.layer_sizes = layer_sizes
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
         assert population_size > 0 and population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
-        if constant_optimization_method:
-            assert (population_size * num_populations) > optimize_constants_elite, "The number of candidates to which parameter optimization is applied to is larger than the total population size"
+        if constant_optimization:
+            self.optimize_constants_elite = jnp.minimum(optimize_constants_elite, num_populations*population_size)
         self.population_size = population_size
         assert max_init_depth > 0, "The max initial depth should be larger than 0"
         self.max_init_depth = max_init_depth
@@ -232,7 +226,7 @@ class GeneticProgramming:
                                                      num_trees=self.num_trees, 
                                                      population_size=population_size,
                                                      tournament_size=self.tournament_size),
-                                                    in_axes=[0, 0, 0, 0, 0, None]), donate_argnums=(0,1))
+                                                    in_axes=[0, 0, 0, 0, 0, None]), donate_argnums=(0))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
@@ -250,25 +244,15 @@ class GeneticProgramming:
         self.data_mesh = NamedSharding(self.mesh, P())
         
         # Define hyperparameters for constant optimization
-        self.constant_step_size_init = constant_step_size_init
+        self.constant_step_size = constant_step_size
         self.optimize_constants_elite = optimize_constants_elite
-        self.start_constant_optimization = start_constant_optimization
+        self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
 
-        assert constant_optimization_method in ["evolution", "gradient", None], "This optimization method is not implemented"
-        if constant_optimization_method == "evolution":
-            assert constant_optimization_N_offspring > 0, "The offspring size for constant optimization should be larger than 0"
-            self.constant_optimization_steps = constant_optimization_steps
-            self.optimize_constants_function = jax.vmap(partial(self.optimize_constants_with_evolution, n_iterations=constant_optimization_steps), in_axes=[0, None, 0, None])
-            self.n_offspring = constant_optimization_N_offspring
-            self.constant_optimization = True
-        elif constant_optimization_method == "gradient":
+        if self.constant_optimization:
             self.optimize_constants_function = partial(self.optimize_constants_with_gradients, n_epoch=constant_optimization_steps)
-            self.constant_optimization = True
-            
         else:
             self.optimize_constants_function = None
-            self.constant_optimization = False
 
         # Define sharded functions for evaluation and optimization
         @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_vma=False)
@@ -374,8 +358,6 @@ class GeneticProgramming:
             operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.1), 
                              ("-", lambda x, y: jnp.subtract(x, y), 2, 0.1),
                              ("*", lambda x, y: jnp.multiply(x, y), 2, 0.1),
-                             ("/", lambda x, y: jnp.divide(x, y), 2, 0.1),
-                             ("**", lambda x, y: jnp.power(x, y), 2, 0.1)
                              ]
             
         if variable_list is None:
@@ -517,7 +499,6 @@ class GeneticProgramming:
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""
         self.current_generation = 0
-        self.constant_step_size = self.constant_step_size_init
 
         # The Pareto front keeps track of the best solutions at each complexity level
         self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 4)))        
@@ -780,7 +761,7 @@ class GeneticProgramming:
         fitness = self.jit_eval(flat_populations, data) # Evaluate the candidates
 
         # Optimize constants of the best candidates in the current generation
-        if self.constant_optimization and self.current_generation >= self.start_constant_optimization:
+        if self.constant_optimization:
             self.optimizer = self.optimizer_class(self.constant_step_size)
 
             # Get best candidates
@@ -800,6 +781,10 @@ class GeneticProgramming:
             # Store updated candidates and fitness
             flat_populations = flat_populations.at[best_candidates_idx].set(optimized_population)
             fitness = fitness.at[best_candidates_idx].set(optimized_fitness)
+
+        # Gather sharded fitness to a single device before concatenation
+        fitness = jnp.array(jax.device_get(fitness))
+        flat_populations = jnp.array(jax.device_get(flat_populations))
 
         self.update_pareto_front(fitness, flat_populations)
 
@@ -870,68 +855,6 @@ class GeneticProgramming:
         candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(new_candidates, jnp.argmin(loss, axis=0))  # Get best candidate during constant optimization
 
         return fitness, candidates
-
-    def optimize_constants_generation(self, carry: Tuple[Array, Tuple, PRNGKey], x: int) -> Tuple[Tuple[Array, Tuple, PRNGKey], float]:
-        """
-        optimizes a generation of candidates.
-
-        Parameters
-        ----------
-        carry : Tuple[Array, Tuple, PRNGKey]
-            Tuple containing candidate, data, and key.
-        x : int
-            Unused parameter for scan.
-
-        Returns
-        -------
-        Tuple[Tuple[Array, Tuple, PRNGKey], float]
-            Tuple containing updated candidate, data, and key, and the best fitness.
-        """
-
-        candidate, data, key, step_size = carry
-
-        key, sample_key = jr.split(key)
-
-        mask = candidate[..., 0] == 1.0 #Only samples mutations for the nodes that contain a constant
-        mutations = jax.vmap(lambda _key: step_size * jr.normal(_key, shape=(self.num_trees, self.max_nodes,)) * mask)(jr.split(sample_key, self.n_offspring))
-        mutations = jnp.vstack([jnp.zeros((1, self.num_trees, self.max_nodes)), mutations])
-
-        offspring = jax.vmap(lambda m: candidate.at[..., 3].set(candidate[..., 3] + m))(mutations)
-
-        fitness = self.vmap_trees(offspring[..., 3:], offspring[..., :3], data)
-
-        # Regularize invalid solutions
-        nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
-        fitness = jnp.where(nan_or_inf, jnp.ones(self.n_offspring + 1) * self.max_fitness, fitness)
-
-        fitness = jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
-
-        return (offspring[jnp.argmin(fitness)], data, key, step_size), jnp.min(fitness)
-
-    def optimize_constants_with_evolution(self, candidate: Array, data: Tuple, key: PRNGKey, step_size: float, n_iterations: int) -> Tuple[float, Array]:
-        """
-        optimizes a candidate using Evolution Strategies (ES).
-
-        Parameters
-        ----------
-        candidate : Array
-            Candidate solution.
-        data : Tuple
-            The data required to evaluate the population.
-        key : PRNGKey
-            Random key.
-        n_iterations : int
-            Number of iterations for optimization.
-
-        Returns
-        -------
-        Tuple[float, Array]
-            Best fitness and optimized candidate.
-        """
-
-        (new_candidate, _, _, _), fitness = jax.lax.scan(self.optimize_constants_generation, (candidate, data, key, step_size), length=n_iterations)
-
-        return jnp.min(fitness), new_candidate
 
     def punish_duplicates(self, population: Array, fitness: Array) -> Tuple[Array, Array]:
         """
