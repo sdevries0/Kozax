@@ -14,11 +14,19 @@ class BaseFitnessFunction(ABC):
     """
     Abstract base class for evaluating candidates in genetic programming.
 
+    Attributes
+    ----------
+    n_objectives : int
+        Number of objectives for multi-objective optimization. Default is 1.
+        Can be overridden in subclasses by setting as a class attribute.
+
     Methods
     -------
     __call__(candidate, data, tree_evaluator)
         Evaluates the candidate on a task.
     """
+    
+    n_objectives: int = 1
 
     @abstractmethod
     def __call__(self, candidate: Array, data: Tuple, tree_evaluator: Callable) -> float:
