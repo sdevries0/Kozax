@@ -1180,7 +1180,7 @@ class GeneticProgramming:
 
         pareto_fitness, pareto_solutions = self.pareto_front
 
-        pareto_fitness = jnp.squeeze(pareto_fitness)
+        pareto_fitness = pareto_fitness[:,0]
 
         complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
 
