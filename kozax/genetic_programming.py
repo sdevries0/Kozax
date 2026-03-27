@@ -508,7 +508,10 @@ class GeneticProgramming:
         self.current_generation = 0
 
         # The Pareto front keeps track of the best solutions at each complexity level
-        self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, 4)))        
+        if self.n_objectives==1:
+            self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 4)))    
+        else:
+            self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, 4)))        
 
     def initialize_population(self, key: PRNGKey) -> Array:
         """
@@ -912,8 +915,9 @@ class GeneticProgramming:
         """
         current_pareto_fitness, current_pareto_solutions = self.pareto_front
 
-        if self.n_objectives == 1:
-            fitness = fitness[:,None]
+        # if self.n_objectives == 1:
+            # fitness = fitness[:,None]
+        print(fitness.shape, current_pareto_fitness.shape)
 
         try:
             _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
@@ -921,6 +925,9 @@ class GeneticProgramming:
             raise("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.")
 
         _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
+
+        if self.n_objectives==1:
+            _fitness=_fitness[:,None]
 
         # Compute complexity of the current population
         if (self.n_objectives == 1) or self.complexity_objective:
@@ -957,7 +964,7 @@ class GeneticProgramming:
 
         pareto_solutions, unique_indices = jnp.unique(_population[pareto_indices], return_index=True, axis=0)
 
-        self.pareto_front = (_fitness[pareto_indices][unique_indices], pareto_solutions)
+        self.pareto_front = (fitness[pareto_indices][unique_indices], pareto_solutions)
 
     def print_pareto_front(self, save: bool = False, path_to_file: str = None):
         if self.n_objectives == 1:
@@ -1180,7 +1187,7 @@ class GeneticProgramming:
 
         pareto_fitness, pareto_solutions = self.pareto_front
 
-        pareto_fitness = pareto_fitness[:,0]
+        # pareto_fitness = pareto_fitness[:,0]
 
         complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
 
