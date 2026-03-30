@@ -256,7 +256,7 @@ class GeneticProgramming:
         self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
 
-        if (self.n_objectives>1) & self.constant_optimization:
+        if (self.n_objectives>1) and self.constant_optimization:
             print("Note that only the first objective is used for constant optimisation.")
 
         self.optimize_constants_function = partial(self.optimize_constants, n_epoch=constant_optimization_steps)
@@ -915,10 +915,6 @@ class GeneticProgramming:
         """
         current_pareto_fitness, current_pareto_solutions = self.pareto_front
 
-        # if self.n_objectives == 1:
-            # fitness = fitness[:,None]
-        print(fitness.shape, current_pareto_fitness.shape)
-
         try:
             _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
         except:
@@ -961,10 +957,16 @@ class GeneticProgramming:
         dominated_by_others = ~jnp.any(j_dominates_i, axis=1)
         
         pareto_indices = jnp.nonzero(dominated_by_others)[0]
+        _pareto_front = _population[pareto_indices]
 
-        pareto_solutions, unique_indices = jnp.unique(_population[pareto_indices], return_index=True, axis=0)
+        padded_pareto_front = jnp.zeros((2*self.population_size, *_population.shape[1:]))
+        padded_pareto_front = padded_pareto_front.at[:_pareto_front.shape[0]].set(_pareto_front)
 
-        self.pareto_front = (fitness[pareto_indices][unique_indices], pareto_solutions)
+        pareto_solutions, unique_indices = jnp.unique(padded_pareto_front, return_index=True, axis=0)
+
+        unique_indices = jnp.sort(unique_indices)[:-1]
+
+        self.pareto_front = (fitness[pareto_indices][unique_indices], padded_pareto_front[unique_indices])
 
     def print_pareto_front(self, save: bool = False, path_to_file: str = None):
         if self.n_objectives == 1:
