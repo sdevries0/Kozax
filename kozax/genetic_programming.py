@@ -921,10 +921,6 @@ class GeneticProgramming:
         padded_population = jnp.ones((3*self.population_size, *_population.shape[1:]))
         padded_population = padded_population.at[:_population.shape[0]].set(_population)
 
-        
-
-        
-
         if self.n_objectives==1:
             padded_fitness = jnp.ones((3*self.population_size,)) * self.max_fitness
             padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
@@ -966,15 +962,19 @@ class GeneticProgramming:
 
         pareto_indices = jnp.nonzero(dominated_by_others)[0]
         _pareto_front = padded_population[pareto_indices]
+        _pareto_fitness = padded_fitness[pareto_indices]
 
         padded_pareto_front = jnp.zeros((2*self.population_size, *_population.shape[1:]))
         padded_pareto_front = padded_pareto_front.at[:_pareto_front.shape[0]].set(_pareto_front)
 
-        pareto_solutions, unique_indices = jnp.unique(padded_pareto_front, return_index=True, axis=0)
+        _, unique_indices = jnp.unique(padded_pareto_front, return_index=True, axis=0)
 
-        unique_indices = jnp.sort(unique_indices)[:-1]
+        unique_indices = unique_indices[:-1]
 
-        self.pareto_front = (fitness[pareto_indices][unique_indices], padded_pareto_front[unique_indices])
+        if self.n_objectives==1:
+            _pareto_fitness = jnp.squeeze(_pareto_fitness)
+
+        self.pareto_front = (_pareto_fitness[unique_indices], padded_pareto_front[unique_indices])
 
     def print_pareto_front(self, save: bool = False, path_to_file: str = None):
         if self.n_objectives == 1:
