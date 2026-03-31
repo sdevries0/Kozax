@@ -921,12 +921,17 @@ class GeneticProgramming:
         padded_population = jnp.ones((3*self.population_size, *_population.shape[1:]))
         padded_population = padded_population.at[:_population.shape[0]].set(_population)
 
-        padded_fitness = jnp.ones((3*self.population_size, _fitness.shape[-1])) * self.max_fitness
+        
 
-        padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
+        
 
         if self.n_objectives==1:
-            padded_fitness=padded_fitness[:,None]
+            padded_fitness = jnp.ones((3*self.population_size,)) * self.max_fitness
+            padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
+            padded_fitness = padded_fitness[:,None]
+        else:
+            padded_fitness = jnp.ones((3*self.population_size, _fitness.shape[-1])) * self.max_fitness
+            padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
 
         # Compute complexity of the current population
         if (self.n_objectives == 1) or self.complexity_objective:
