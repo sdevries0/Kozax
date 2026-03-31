@@ -790,9 +790,7 @@ class GeneticProgramming:
                 jr.split(key, self.optimize_constants_elite), 
                 self.constant_step_size
                 )
-            
             optimized_population = jax.block_until_ready(optimized_population)
-
             # Store updated candidates and fitness
             flat_populations = flat_populations.at[best_candidates_idx].set(optimized_population)
             fitness = fitness.at[best_candidates_idx].set(optimized_fitness)
@@ -805,7 +803,6 @@ class GeneticProgramming:
 
         # Reshape the populations into the subpopulations
         fitness = fitness.reshape((self.num_populations, self.population_size, self.n_objectives))
-
         populations = flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))
 
         return fitness, populations
@@ -921,16 +918,22 @@ class GeneticProgramming:
             raise("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.")
 
         _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
+        padded_population = jnp.ones((3*self.population_size, *_population.shape[1:]))
+        padded_population = padded_population.at[:_population.shape[0]].set(_population)
+
+        padded_fitness = jnp.ones((3*self.population_size, _fitness.shape[-1])) * self.max_fitness
+
+        padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
 
         if self.n_objectives==1:
-            _fitness=_fitness[:,None]
+            padded_fitness=padded_fitness[:,None]
 
         # Compute complexity of the current population
         if (self.n_objectives == 1) or self.complexity_objective:
-            complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_population)[:,None]
-            metrics = jnp.concatenate([_fitness, complexity], axis=-1)
+            complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(padded_population)[:,None]
+            metrics = jnp.concatenate([padded_fitness, complexity], axis=-1)
         else:
-            metrics = _fitness
+            metrics = padded_fitness
 
         # For each solution i, check if it's dominated by any other solution j
         
@@ -955,9 +958,9 @@ class GeneticProgramming:
         
         # A solution is non-dominated if it's not dominated by any other solution
         dominated_by_others = ~jnp.any(j_dominates_i, axis=1)
-        
+
         pareto_indices = jnp.nonzero(dominated_by_others)[0]
-        _pareto_front = _population[pareto_indices]
+        _pareto_front = padded_population[pareto_indices]
 
         padded_pareto_front = jnp.zeros((2*self.population_size, *_population.shape[1:]))
         padded_pareto_front = padded_pareto_front.at[:_pareto_front.shape[0]].set(_pareto_front)
