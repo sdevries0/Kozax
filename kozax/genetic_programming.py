@@ -969,7 +969,7 @@ class GeneticProgramming:
 
         _, unique_indices = jnp.unique(padded_pareto_front, return_index=True, axis=0)
 
-        unique_indices = unique_indices[:-1]
+        unique_indices = jnp.sort(unique_indices)[:-1]
 
         if self.n_objectives==1:
             _pareto_fitness = jnp.squeeze(_pareto_fitness)
