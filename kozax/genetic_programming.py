@@ -313,6 +313,7 @@ class GeneticProgramming:
         # Warm up evolve function
         dummy_population = self.evolve_population(dummy_population, dummy_fitness, dummy_key)
         jax.block_until_ready(dummy_population)
+        self.reset()
         print(f"Finished compilation in {(time.time() - start):.2f} seconds")
 
     def map_breadth_indices_to_depth_indices(self, depth: int) -> Array:
@@ -918,15 +919,16 @@ class GeneticProgramming:
             raise("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.")
 
         _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
-        padded_population = jnp.ones((3*self.population_size, *_population.shape[1:]))
+
+        padded_population = jnp.ones((3*self.population_size*self.num_populations, *_population.shape[1:]))
         padded_population = padded_population.at[:_population.shape[0]].set(_population)
 
         if self.n_objectives==1:
-            padded_fitness = jnp.ones((3*self.population_size,)) * self.max_fitness
+            padded_fitness = jnp.ones((3*self.population_size*self.num_populations,)) * self.max_fitness
             padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
             padded_fitness = padded_fitness[:,None]
         else:
-            padded_fitness = jnp.ones((3*self.population_size, _fitness.shape[-1])) * self.max_fitness
+            padded_fitness = jnp.ones((3*self.population_size*self.num_populations, _fitness.shape[-1])) * self.max_fitness
             padded_fitness = padded_fitness.at[:_fitness.shape[0]].set(_fitness)
 
         # Compute complexity of the current population
@@ -960,21 +962,17 @@ class GeneticProgramming:
         # A solution is non-dominated if it's not dominated by any other solution
         dominated_by_others = ~jnp.any(j_dominates_i, axis=1)
 
-        pareto_indices = jnp.nonzero(dominated_by_others)[0]
-        _pareto_front = padded_population[pareto_indices]
-        _pareto_fitness = padded_fitness[pareto_indices]
+        _pareto_front = jnp.where(dominated_by_others[:,None,None,None], padded_population, jnp.zeros_like(padded_population))
+        _pareto_fitness = jnp.where(dominated_by_others[:,None], padded_fitness, self.max_fitness * jnp.ones_like(padded_fitness))
 
-        padded_pareto_front = jnp.zeros((2*self.population_size, *_population.shape[1:]))
-        padded_pareto_front = padded_pareto_front.at[:_pareto_front.shape[0]].set(_pareto_front)
+        _, unique_indices = jnp.unique(_pareto_front, return_index=True, axis=0)
 
-        _, unique_indices = jnp.unique(padded_pareto_front, return_index=True, axis=0)
-
-        unique_indices = jnp.sort(unique_indices)[:-1]
+        unique_indices = unique_indices[jnp.all(_pareto_fitness[unique_indices] != self.max_fitness, axis=-1)]
 
         if self.n_objectives==1:
             _pareto_fitness = jnp.squeeze(_pareto_fitness)
 
-        self.pareto_front = (_pareto_fitness[unique_indices], padded_pareto_front[unique_indices])
+        self.pareto_front = (_pareto_fitness[unique_indices], _pareto_front[unique_indices])
 
     def print_pareto_front(self, save: bool = False, path_to_file: str = None):
         if self.n_objectives == 1:
