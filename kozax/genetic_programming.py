@@ -230,7 +230,7 @@ class GeneticProgramming:
                                                      num_trees=self.num_trees, 
                                                      population_size=population_size,
                                                      tournament_size=self.tournament_size),
-                                                    in_axes=[0, 0, 0, 0, 0, None]), donate_argnums=(0))
+                                                    in_axes=[0, 0, 0, 0, 0, 0, None]), donate_argnums=(0))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
@@ -836,7 +836,7 @@ class GeneticProgramming:
 
         loss = jnp.minimum(loss, self.max_fitness * jnp.ones_like(loss))
 
-        updates, states = jax.vmap(self.optimizer.update)(gradients, states, candidates[..., 3])  # Parallel computation of the updates
+        updates, states = jax.vmap(self.optimizer.update)(gradients, states, candidates[..., 3:])  # Parallel computation of the updates
         new_candidates = candidates.at[..., 3:].set(jax.vmap(lambda t, u: t + u)(candidates[..., 3:], updates))  # Parallel updating of constants
 
         return (new_candidates, states, data), (candidates, loss)
@@ -1009,7 +1009,7 @@ class GeneticProgramming:
         # Create sorting keys for lexicographic ordering
         sort_keys = []
         for obj_idx in range(self.n_objectives):
-            sort_keys.append(pareto_fitness[:, obj_idx])
+            sort_keys.append(pareto_fitness[:, -obj_idx - 1])
         
         # Lexicographic sort
         sorted_indices = jnp.lexsort(sort_keys)
