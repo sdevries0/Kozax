@@ -46,7 +46,7 @@ def find_end_idx(carry: Tuple[Array, int, int]) -> Tuple[Array, int, int]:
         Updated tuple with the tree, open slots, and current node index.
     """
     tree, open_slots, counter = carry
-    _, idx1, idx2, _ = tree[counter]
+    _, idx1, idx2, _, _ = tree[counter]
     open_slots -= 1  # Reduce open slot for current node
     open_slots = jax.lax.select(idx1 < 0, open_slots, open_slots + 1)  # Increase the open slots for a child
     open_slots = jax.lax.select(idx2 < 0, open_slots, open_slots + 1)  # Increase the open slots for a child
@@ -136,7 +136,7 @@ def tree_crossover(tree1: Array,
         Pair of new trees.
     """
     # Define indices of the nodes
-    tree_indices = jnp.tile(node_ids[:, None], reps=(1, 4))
+    tree_indices = jnp.tile(node_ids[:, None], reps=(1, 5))
     key1, key2 = keys
 
     # Define last node in tree
@@ -154,8 +154,8 @@ def tree_crossover(tree1: Array,
     _, _, end_idx2 = jax.lax.while_loop(lambda carry: carry[1] > 0, find_end_idx, (tree2, 1, node_idx2))
 
     # Initialize children
-    child1 = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (len(node_ids), 1))
-    child2 = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (len(node_ids), 1))
+    child1 = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0, 0.0]), (len(node_ids), 1))
+    child2 = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0, 0.0]), (len(node_ids), 1))
 
     # Compute subtree sizes
     subtree_size1 = node_idx1 - end_idx1

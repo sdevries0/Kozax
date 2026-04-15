@@ -136,7 +136,7 @@ class GeneticProgramming:
         assert self.num_trees > 0, "The number of trees should be larger than 0"
         assert tournament_size > 1, "The tournament size should be larger than 1"
         self.tournament_size = tournament_size
-        self.num_ouputs = 1
+        self.num_ouputs = 2
 
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
@@ -717,9 +717,8 @@ class GeneticProgramming:
             Value of the root node.
         """
         
-        x, _, result = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data, jnp.zeros(self.num_ouputs))) #Iterate over the tree to compute the value of each node
-        # return x[-1, -1] #Return the value of the root node
-        return jnp.squeeze(result)
+        x, _, result = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data, jnp.zeros(self.num_ouputs+1))) #Iterate over the tree to compute the value of each node
+        return jnp.squeeze(result[1:])
 
     def tree_evaluator(self, candidate: Array, data: Array) -> Array:
         """
