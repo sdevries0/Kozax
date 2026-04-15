@@ -54,7 +54,7 @@ def sample_node(i: int,
     tree = jax.lax.select(slots[index] > 0, tree.at[_i, 1].set(map_b_to_d[2 * i + 1]), tree.at[_i, 1].set(-1))
     tree = jax.lax.select(slots[index] > 1, tree.at[_i, 2].set(map_b_to_d[2 * i + 2]), tree.at[_i, 2].set(-1))
 
-    tree = jax.lax.select(index == 1, tree.at[_i, 3].set(coefficient), tree)  # Set coefficient value
+    tree = jax.lax.select(index == 1, tree.at[_i, 4].set(coefficient), tree)  # Set coefficient value
     tree = tree.at[_i, 0].set(index)
 
     open_slots = jax.lax.select(index == 0, open_slots, jnp.maximum(0, open_slots + slots[index] - 1))  # Update the number of open slots
@@ -109,7 +109,7 @@ def prune_tree(tree: Array,
     Array
         Tree with empty nodes pruned.
     """
-    tree, counter, _ = jax.lax.fori_loop(0, tree_size, partial(prune_row, old_tree=tree), (jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (max_nodes, 1)), max_nodes - 1, tree_size))
+    tree, counter, _ = jax.lax.fori_loop(0, tree_size, partial(prune_row, old_tree=tree), (jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0, 0.0]), (max_nodes, 1)), max_nodes - 1, tree_size))
     tree = tree.at[:, 1:3].set(jnp.where(tree[:, 1:3] > -1, tree[:, 1:3] + counter + 1, tree[:, 1:3]))  # Update index references after pruning
     return tree
 
@@ -117,6 +117,7 @@ def sample_tree(key: PRNGKey,
                 depth: int, 
                 variable_array: Array, 
                 tree_size: int, 
+                num_outputs: int,
                 max_nodes: int, 
                 args: Tuple) -> Array:
     """Initializes a tree.
@@ -142,10 +143,20 @@ def sample_tree(key: PRNGKey,
         Initialized tree.
     """
     # First sample tree at full size given depth
-    tree = jax.lax.fori_loop(0, tree_size, sample_node, (key, jnp.zeros((tree_size, 4)), 1, depth, max_nodes, variable_array, args))[1]  # Sample nodes in a tree sequentially
+    sample_key, output_key = jr.split(key)
+    tree = jax.lax.fori_loop(0, tree_size, sample_node, (sample_key, jnp.zeros((tree_size, 5)), 1, depth, max_nodes, variable_array, args))[1]  # Sample nodes in a tree sequentially
 
     # Prune empty rows in tree
     pruned_tree = prune_tree(tree, tree_size, max_nodes)
+    operator_indices = args[1]
+    is_operator = jnp.isin(pruned_tree[:,0], operator_indices)
+    key1, key2 = jr.split(output_key)
+    modi_outputs = jr.randint(key1, shape=max_nodes, minval=1, maxval=num_outputs+1)
+    p = (num_outputs > 1) * 0.1
+    keep_outputs = (is_operator * jr.bernoulli(key2, p=p, shape=max_nodes)).at[-1].set(1.0)
+
+    pruned_tree = pruned_tree.at[:,3].set(modi_outputs * keep_outputs)
+
     return pruned_tree
 
 def sample_population(key: PRNGKey, 

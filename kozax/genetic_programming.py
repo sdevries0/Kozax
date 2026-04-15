@@ -136,6 +136,7 @@ class GeneticProgramming:
         assert self.num_trees > 0, "The number of trees should be larger than 0"
         assert tournament_size > 1, "The tournament size should be larger than 1"
         self.tournament_size = tournament_size
+        self.num_ouputs = 1
 
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
@@ -178,8 +179,8 @@ class GeneticProgramming:
         self.map_b_to_d = self.map_breadth_indices_to_depth_indices(jnp.maximum(self.max_init_depth, 3))
 
         # Define general tree structures
-        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 4))
-        self.empty_tree = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0]), (self.max_nodes, 1))
+        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 5))
+        self.empty_tree = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0, 0.0]), (self.max_nodes, 1))
 
         self.initialize_node_library(operator_list, variable_list)
 
@@ -196,6 +197,7 @@ class GeneticProgramming:
         self.sample_tree = partial(sample_tree,
                                    max_nodes=self.max_nodes, 
                                    tree_size=2**jnp.maximum(self.max_init_depth, 3) - 1,
+                                   num_outputs=self.num_ouputs,
                                    args=self.sample_args)
         
         self.sample_population = partial(sample_population, 
@@ -257,7 +259,7 @@ class GeneticProgramming:
         # Define sharded functions for evaluation and optimization
         @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_vma=False)
         def shard_eval(array, data):
-            fitness = self.vmap_trees(array[..., 3:], array[..., :3], data)
+            fitness = self.vmap_trees(array[..., 4:], array[..., :4], data)
 
             # Regularize invalid solutions
             nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
@@ -501,7 +503,7 @@ class GeneticProgramming:
         self.current_generation = 0
 
         # The Pareto front keeps track of the best solutions at each complexity level
-        self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 4)))        
+        self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 5)))        
 
     def initialize_population(self, key: PRNGKey) -> Array:
         """
@@ -628,9 +630,9 @@ class GeneticProgramming:
         tree, tree_indices, empty_tree = carry
 
         last_node_idx = jnp.sum(tree[:,0]==0)
-        f_idx, a_idx, b_idx, constant = tree[i]
-
-        evaluated_subtree = tree.at[i].set(jnp.array([1.0, -1.0, -1.0, jax.lax.switch(f_idx.astype(int), self.node_function_list, tree[a_idx.astype(int), -1], tree[b_idx.astype(int), -1], jnp.zeros(1))]))
+        f_idx, a_idx, b_idx, output_index, constant = tree[i]
+        output_index = output_index * (i == (self.max_nodes-1))
+        evaluated_subtree = tree.at[i].set(jnp.array([1.0, -1.0, -1.0, output_index, jax.lax.switch(f_idx.astype(int), self.node_function_list, tree[a_idx.astype(int), -1], tree[b_idx.astype(int), -1], jnp.zeros(1))]))
         
         one_branch_tree = jnp.where((tree_indices < i) & (tree_indices >= last_node_idx + 1), jnp.roll(tree, 1, axis=0), evaluated_subtree)
         one_branch_tree = jnp.where(tree_indices < last_node_idx + 1, empty_tree, one_branch_tree)
@@ -665,7 +667,7 @@ class GeneticProgramming:
 
         return tree
 
-    def evaluate_row_from_tree(self, i: int, carry: Tuple[Array, Array], node_function_list: list) -> Tuple[Array, Array]:
+    def evaluate_row_from_tree(self, i: int, carry: Tuple[Array, Array, Array], node_function_list: list) -> Tuple[Array, Array]:
         """
         Evaluates a node given inputs.
 
@@ -684,17 +686,19 @@ class GeneticProgramming:
             Evaluated node.
         """
 
-        tree, data = carry
-        f_idx, a_idx, b_idx, constant = tree[i]  # Get node function, index of first and second operand, and constant value of node (which will be 0 if the node function is not 1)
+        tree, data, output_array = carry
+        f_idx, a_idx, b_idx, output_index, constant = tree[i]  # Get node function, index of first and second operand, and constant value of node (which will be 0 if the node function is not 1)
 
-        x = tree[a_idx.astype(int), 3]  # Value of first operand
-        y = tree[b_idx.astype(int), 3]  # Value of second operand
+        x = tree[a_idx.astype(int), 4]  # Value of first operand
+        y = tree[b_idx.astype(int), 4]  # Value of second operand
 
         value = jax.lax.select(f_idx == 1, constant, jax.lax.switch(f_idx.astype(int), node_function_list, x, y, data))  # Computes value of the node
 
-        tree = tree.at[i, 3].set(value)  # Store value
+        tree = tree.at[i, 4].set(value)  # Store value
+        output_index = output_index.astype(int)
+        output_array = output_array.at[output_index].set(output_array[output_index] + value)
 
-        return (tree, data)
+        return (tree, data, output_array)
 
     def iterate_through_tree(self, tree: Array, data: Array) -> Array:
         """
@@ -713,8 +717,9 @@ class GeneticProgramming:
             Value of the root node.
         """
         
-        x, _ = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data)) #Iterate over the tree to compute the value of each node
-        return x[-1, -1] #Return the value of the root node
+        x, _, result = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data, jnp.zeros(self.num_ouputs))) #Iterate over the tree to compute the value of each node
+        # return x[-1, -1] #Return the value of the root node
+        return jnp.squeeze(result)
 
     def tree_evaluator(self, candidate: Array, data: Array) -> Array:
         """
@@ -811,7 +816,7 @@ class GeneticProgramming:
             Tuple containing updated candidates, states, and data, and the original candidates and loss.
         """
         candidates, states, data = carry
-        loss, gradients = self.vmap_gradients(candidates[..., 3:], candidates[..., :3], data)  # Parallel computation of the loss and gradients
+        loss, gradients = self.vmap_gradients(candidates[..., 4:], candidates[..., :4], data)  # Parallel computation of the loss and gradients
 
         # Regularize invalid solutions
         nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(loss)
@@ -819,8 +824,8 @@ class GeneticProgramming:
 
         loss = jnp.minimum(loss, self.max_fitness * jnp.ones_like(loss))
 
-        updates, states = jax.vmap(self.optimizer.update)(gradients, states, candidates[..., 3])  # Parallel computation of the updates
-        new_candidates = candidates.at[..., 3:].set(jax.vmap(lambda t, u: t + u)(candidates[..., 3:], updates))  # Parallel updating of constants
+        updates, states = jax.vmap(self.optimizer.update)(gradients, states, candidates[..., 4])  # Parallel computation of the updates
+        new_candidates = candidates.at[..., 4:].set(jax.vmap(lambda t, u: t + u)(candidates[..., 4:], updates))  # Parallel updating of constants
 
         return (new_candidates, states, data), (candidates, loss)
 
@@ -845,7 +850,7 @@ class GeneticProgramming:
             Optimized and evaluated candidate.
         """
 
-        states = jax.vmap(self.optimizer.init)(candidates[..., 3:])  # Initialize optimizers for each candidate
+        states = jax.vmap(self.optimizer.init)(candidates[..., 4:])  # Initialize optimizers for each candidate
 
         _, out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
 
@@ -1012,7 +1017,7 @@ class GeneticProgramming:
         """
 
         if tree[-1, 0] == 1:  # constant
-            return str(tree[-1, 3])
+            return str(tree[-1, 4])
         elif tree[-1, 1] < 0:  # Variable
             return self.node_to_string[tree[-1, 0].astype(int).item()]
         elif tree[-1, 2] < 0:  # Operator with one operand
