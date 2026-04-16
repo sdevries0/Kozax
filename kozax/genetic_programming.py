@@ -448,7 +448,7 @@ class GeneticProgramming:
         self.node_function_list = node_function_list
         self.variable_array = variable_array
 
-    def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None) -> None:
+    def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None, track_fitness: bool = False) -> None:
         """
         Fits the genetic programming algorithm to the data.
 
@@ -478,6 +478,9 @@ class GeneticProgramming:
         key, init_key = jr.split(key)
 
         self.reset()
+        if track_fitness:
+            track_fitnesses = jnp.zeros(self.num_generations)
+            track_complexity = jnp.zeros(self.num_generations)
         
         # Warm up JIT functions with actual data shapes
         dummy_population = self.initialize_population(init_key)
@@ -489,6 +492,10 @@ class GeneticProgramming:
         for g in range(self.num_generations):
             key, eval_key, sample_key = jr.split(key, 3)
             fitness, population = self.evaluate_population(population, data, eval_key)
+            if track_fitness:
+                best_index = jnp.unravel_index(jnp.argmin(fitness), fitness.shape)
+                track_fitnesses = track_fitnesses.at[g].set(fitness[best_index])
+                track_complexity = track_complexity.at[g].set(jnp.sum(population[best_index[0],best_index[1],:,:,0]!=0))
 
             if verbose:
                 if g % verbose == 0:
@@ -501,6 +508,9 @@ class GeneticProgramming:
 
         print("Final pareto front:")
         self.print_pareto_front(save_pareto_front, path_to_file)
+
+        if track_fitness:
+            return track_fitnesses, track_complexity
 
     def reset(self) -> None:
         """Resets the state of the genetic programming algorithm."""

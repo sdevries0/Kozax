@@ -226,7 +226,7 @@ def evolve_population(population: Array,
     
     evolved_population = jnp.where(ranks[:,None,None,None] == 0, population, jnp.concatenate([left_children, right_children], axis=0))
 
-    return evolved_population, reproduction_type, left_parents, right_parents
+    return evolved_population
 
 def migrate_population(receiver: Array, 
                        sender: Array, 
