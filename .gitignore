@@ -1,4 +1,4 @@
 *.pyc
 __version__.py
-# pyproject.toml
+pyproject.toml
 dist/*
