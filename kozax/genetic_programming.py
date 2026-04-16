@@ -482,6 +482,7 @@ class GeneticProgramming:
         self._warm_up_jit_functions(dummy_population, data)
 
         population = dummy_population
+        print(jnp.sum(population[:,:,:,-1,3] == 0))
 
         for g in range(self.num_generations):
             key, eval_key, sample_key = jr.split(key, 3)
@@ -494,6 +495,7 @@ class GeneticProgramming:
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
+                print(jnp.sum(population[:,:,:,-1,3] == 0))
 
         print("Final pareto front:")
         self.print_pareto_front(save_pareto_front, path_to_file)
@@ -554,7 +556,7 @@ class GeneticProgramming:
 
         new_populations = evolve_populations(self.jit_evolve_population, 
                                              populations, 
-                                             fitness,
+                                             fitness, 
                                              key, 
                                              self.current_generation, 
                                              self.migration_period, 
@@ -563,7 +565,8 @@ class GeneticProgramming:
                                              self.reproduction_probabilities)
         
         self.current_generation += 1
-        return self.jit_simplify_constants(new_populations)
+        # return self.jit_simplify_constants(new_populations)
+        return new_populations
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
         """
@@ -608,7 +611,7 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Pair of candidates.
         """
-        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0])(_keys, self.max_init_depth, self.variable_array), in_axes=[1])(keys)
+        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0, None])(_keys, self.max_init_depth, self.variable_array, True), in_axes=[1])(keys)
         return offspring[0], offspring[1]
 
     def simplify_constants_in_row(self, i: int, carry: Tuple[Array, Array, Array]) -> Tuple[Array, Array, Array]:

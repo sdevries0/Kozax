@@ -188,6 +188,10 @@ def tree_crossover(tree1: Array,
     # Insert subtree in selected node in children
     child1 = jnp.where((tree_indices >= node_idx1 + 1 - subtree_size2) & (tree_indices < node_idx1 + 1), rolled_subtree2, child1)
     child2 = jnp.where((tree_indices >= node_idx2 + 1 - subtree_size1) & (tree_indices < node_idx2 + 1), rolled_subtree1, child2)
+
+    # Make sure an output node is in the tree
+    child1 = jax.lax.select(child1[-1,3] > 0, child1, child1.at[-1,3].set(tree1[-1,3]))
+    child2 = jax.lax.select(child2[-1,3] > 0, child2, child2.at[-1,3].set(tree2[-1,3]))
     
     return child1, child2
 

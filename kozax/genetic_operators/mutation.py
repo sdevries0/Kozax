@@ -168,7 +168,7 @@ def add_subtree(tree: Array,
     node_ids = tree[:, 0]
     is_leaf = jnp.isin(node_ids, variable_indices)
     mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=is_leaf * 1.0)
-    subtree = sample_tree(sample_key, jnp.minimum(max_init_depth, 2), variable_array)
+    subtree = sample_tree(sample_key, jnp.minimum(max_init_depth, 2), variable_array, mutate_idx == (max_nodes-1))
     subtree_size = jnp.sum(subtree[:, 0] != 0)
     remaining_size = mutate_idx - jnp.sum(tree[:, 0] == 0)
     
@@ -225,7 +225,7 @@ def mutate_leaf(tree: Array,
     
     # Insert new leaf node
     child = tree.at[mutate_idx, 0].set(new_leaf)
-    child = jax.lax.select(new_leaf == 1, child.at[mutate_idx, 3].set(coefficient), child.at[mutate_idx, 3].set(0))
+    child = jax.lax.select(new_leaf == 1, child.at[mutate_idx, 4].set(coefficient), child.at[mutate_idx, 4].set(0))
     return child
 
 def replace_with_one_subtree(tree: Array, 
@@ -262,7 +262,7 @@ def replace_with_one_subtree(tree: Array,
     # Determine subtree to be replaced
     _, _, end_idx = jax.lax.while_loop(lambda carry: carry[1] > 0, find_end_idx, (tree, 1, mutate_idx))
     remaining_size = end_idx - jnp.sum(tree[:, 0] == 0) + 1
-    subtree = sample_tree(key, 2, variable_array)
+    subtree = sample_tree(key, 2, variable_array, False)
     subtree_size = jnp.sum(subtree[:, 0] != 0)
 
     # Create new tree
@@ -317,9 +317,9 @@ def replace_with_two_subtrees(tree: Array,
     # Determine subtree to be replaced
     _, _, end_idx = jax.lax.while_loop(lambda carry: carry[1] > 0, find_end_idx, (tree, 1, mutate_idx))
     remaining_size = end_idx - jnp.sum(tree[:, 0] == 0) + 1
-    subtree1 = sample_tree(key1, 1, variable_array)
+    subtree1 = sample_tree(key1, 1, variable_array, False)
     subtree1_size = jnp.sum(subtree1[:, 0] != 0)
-    subtree2 = sample_tree(key2, 1, variable_array)
+    subtree2 = sample_tree(key2, 1, variable_array, False)
     subtree2_size = jnp.sum(subtree2[:, 0] != 0)
 
     # Create new tree
@@ -474,11 +474,14 @@ def prepend_operator(tree: Array,
     new_operator = jr.choice(sample_key, a=operator_indices, shape=(), p=operator_probabilities)
     new_slots = slots[new_operator]
 
-    subtree = sample_tree(subtree_key, 2, variable_array)
+    subtree = sample_tree(subtree_key, 2, variable_array, False)
     subtree_size = jnp.sum(subtree[:, 0] != 0)
     tree_size = jnp.sum(tree[:, 0] != 0)
 
     second_branch = jr.bernoulli(side_key)  # Sample if the old tree is the first or second operand
+
+    root_output_index = tree[-1,3]
+    tree = tree.at[-1,3].set(0.0)
 
     child = jnp.roll(tree, -1 - (new_slots - 1) * second_branch * subtree_size, axis=0)  # Insert old tree in the new tree
     child = child.at[:, 1:3].set(jnp.where(child[:, 1:3] > -1, child[:, 1:3] - 1 - (new_slots - 1) * second_branch * subtree_size, child[:, 1:3]))  # Update index references
@@ -495,6 +498,7 @@ def prepend_operator(tree: Array,
     child = child.at[-1, 0].set(new_operator)
     child = child.at[-1, 1].set(max_nodes - 2)
     child = child.at[-1, 2].set(jax.lax.select(new_slots == 2, max_nodes - jax.lax.select(second_branch, subtree_size, tree_size) - 2, -1))
+    child = child.at[-1, 3].set(root_output_index)
 
     return child
 
@@ -532,7 +536,7 @@ def insert_operator(tree: Array,
     new_operator = jr.choice(sample_key, a=operator_indices, shape=(), p=operator_probabilities)  # Sample new operator
     new_slots = slots[new_operator]
 
-    subtree = sample_tree(subtree_key, 2, variable_array)  # Sample new subtree
+    subtree = sample_tree(subtree_key, 2, variable_array, False)  # Sample new subtree
     subtree_size = jnp.sum(subtree[:, 0] != 0)
     tree_size = mutate_idx - end_idx
 
@@ -655,7 +659,8 @@ def get_mutations(tree: Array,
     int
         Index of the mutation function.
     """
-    mutation_probs = jnp.ones(len(MUTATE_FUNCTIONS))
+    # mutation_probs = jnp.ones(len(MUTATE_FUNCTIONS))
+    mutation_probs = jnp.array([1.,1.,1.,1.,0.])
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] == 0) < 8, jnp.array([0., 1., 1., 1., 0.]), mutation_probs)  # Tree is too big to add more nodes
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) <= 3, jnp.array([1., 1., 1., 0., 0.]), mutation_probs)  # Tree does not have enough operators
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) == 1, jnp.array([1., 1., 0., 0., 0.]), mutation_probs)  # Tree does not have operators

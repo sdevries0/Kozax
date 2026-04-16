@@ -116,6 +116,7 @@ def prune_tree(tree: Array,
 def sample_tree(key: PRNGKey, 
                 depth: int, 
                 variable_array: Array, 
+                root: bool,
                 tree_size: int, 
                 num_outputs: int,
                 max_nodes: int, 
@@ -153,7 +154,8 @@ def sample_tree(key: PRNGKey,
     key1, key2 = jr.split(output_key)
     modi_outputs = jr.randint(key1, shape=max_nodes, minval=1, maxval=num_outputs+1)
     p = (num_outputs > 1) * 0.1
-    keep_outputs = (is_operator * jr.bernoulli(key2, p=p, shape=max_nodes)).at[-1].set(1.0)
+    keep_outputs = (is_operator * jr.bernoulli(key2, p=p, shape=max_nodes))
+    keep_outputs = keep_outputs.at[-1].set(jax.lax.select(root, True, keep_outputs[-1]))
 
     pruned_tree = pruned_tree.at[:,3].set(modi_outputs * keep_outputs)
 
@@ -187,5 +189,5 @@ def sample_population(key: PRNGKey,
     Array
         Population of candidates.
     """
-    sample_candidate = lambda keys: jax.vmap(sample_function, in_axes=[0, None, 0])(keys, max_init_depth, variable_array)
+    sample_candidate = lambda keys: jax.vmap(sample_function, in_axes=[0, None, 0, None])(keys, max_init_depth, variable_array, True)
     return jax.vmap(sample_candidate)(jr.split(key, (population_size, num_trees)))
