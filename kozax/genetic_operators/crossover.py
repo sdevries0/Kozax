@@ -113,7 +113,8 @@ def tree_crossover(tree1: Array,
                    tree2: Array, 
                    keys: Array,
                    node_ids: Array,
-                   operator_indices: Array) -> Tuple[Array, Array]:
+                   operator_indices: Array,
+                   num_ouputs: int) -> Tuple[Array, Array]:
     """
     Applies crossover to a pair of trees to produce two new trees.
 
@@ -189,9 +190,17 @@ def tree_crossover(tree1: Array,
     child1 = jnp.where((tree_indices >= node_idx1 + 1 - subtree_size2) & (tree_indices < node_idx1 + 1), rolled_subtree2, child1)
     child2 = jnp.where((tree_indices >= node_idx2 + 1 - subtree_size1) & (tree_indices < node_idx2 + 1), rolled_subtree1, child2)
 
+    # Remove output node if parent was a single node
+    child1 = jax.lax.select((last_node_idx2 == (len(node_ids)-1)) & (jnp.sum(child1[:, 0] == 0) < (len(node_ids)-1)), child1.at[node_idx1,3].set(0.0), child1)
+    child2 = jax.lax.select((last_node_idx1 == (len(node_ids)-1)) & (jnp.sum(child2[:, 0] == 0) < (len(node_ids)-1)), child2.at[node_idx2,3].set(0.0), child2)
+
     # Make sure an output node is in the tree
     child1 = jax.lax.select(child1[-1,3] > 0, child1, child1.at[-1,3].set(tree1[-1,3]))
     child2 = jax.lax.select(child2[-1,3] > 0, child2, child2.at[-1,3].set(tree2[-1,3]))
+
+    # If only one output is required, manually set the output index of all non-root nodes to 0.0
+    child1 = jax.lax.select(num_ouputs==1, child1.at[:-1,3].set(jnp.zeros(len(node_ids)-1)), child1)
+    child2 = jax.lax.select(num_ouputs==1, child2.at[:-1,3].set(jnp.zeros(len(node_ids)-1)), child2)
     
     return child1, child2
 
@@ -199,7 +208,8 @@ def full_crossover(tree1: Array,
                    tree2: Array, 
                    keys: Array,
                    node_ids: Array,
-                   operator_indices: Array) -> Tuple[Array, Array]:
+                   operator_indices: Array,
+                   num_ouputs: int) -> Tuple[Array, Array]:
     """
     Swaps the entire trees between two candidates.
 
@@ -228,6 +238,7 @@ def crossover(tree1: Array,
               keys: Array,
               node_ids: Array,
               operator_indices: Array,
+              num_ouputs: int,
               crossover_types: int) -> Tuple[Array, Array]:
     """
     Applies crossover to a pair of trees based on the crossover type.
@@ -252,7 +263,7 @@ def crossover(tree1: Array,
     tuple of (Array, Array)
         Pair of new trees.
     """
-    return jax.lax.cond(crossover_types, tree_crossover, full_crossover, tree1, tree2, keys, node_ids, operator_indices)
+    return jax.lax.cond(crossover_types, tree_crossover, full_crossover, tree1, tree2, keys, node_ids, operator_indices, num_ouputs)
 
 def check_different_tree(parent1: Array, parent2: Array, child1: Array, child2: Array) -> bool:
     """
@@ -296,7 +307,7 @@ def check_different_trees(carry: Tuple[Array, Array, Array, Array, Array, float,
     bool
         True if the offspring are different from the parents for all trees, False otherwise.
     """
-    parent1, parent2, child1, child2, _, _, _, _ = carry
+    parent1, parent2, child1, child2, _, _, _, _, _ = carry
     return jnp.all(jax.vmap(check_different_tree)(parent1, parent2, child1, child2))
 
 def safe_crossover(carry: Tuple[Array, Array, Array, Array, Array, float, Array, Array]) -> Tuple[Array, Array, Array, Array, Array, float, Array, Array]:
@@ -313,24 +324,25 @@ def safe_crossover(carry: Tuple[Array, Array, Array, Array, Array, float, Array,
     tuple of (Array, Array, Array, Array, Array, float, Array, Array)
         Updated tuple with the parent trees, child trees, and other parameters.
     """
-    parent1, parent2, _, _, keys, reproduction_probability, node_ids, operator_indices = carry
+    parent1, parent2, _, _, keys, reproduction_probability, node_ids, operator_indices, num_ouputs = carry
     index_key, type_key, new_key = jr.split(keys[0, 0], 3)
     _, cx_indices, _ = jax.lax.while_loop(lambda carry: jnp.sum(carry[1]) == 0, sample_indices, (index_key, jnp.zeros(parent1.shape[0]), reproduction_probability))
     crossover_types = jr.bernoulli(type_key, p=0.9, shape=(parent1.shape[0],))
-    offspring1, offspring2 = jax.vmap(crossover, in_axes=[0, 0, 0, None, None, 0])(parent1, parent2, keys, node_ids, operator_indices, crossover_types)
+    offspring1, offspring2 = jax.vmap(crossover, in_axes=[0, 0, 0, None, None, None, 0])(parent1, parent2, keys, node_ids, operator_indices, num_ouputs, crossover_types)
     child1 = jnp.where(cx_indices[:, None, None] * jnp.ones_like(parent1), offspring1, parent1)
     child2 = jnp.where(cx_indices[:, None, None] * jnp.ones_like(parent2), offspring2, parent2)
 
     keys = jr.split(new_key, keys.shape[:-1])
 
-    return parent1, parent2, child1, child2, keys, reproduction_probability, node_ids, operator_indices
+    return parent1, parent2, child1, child2, keys, reproduction_probability, node_ids, operator_indices, num_ouputs
 
 def crossover_trees(parent1: Array, 
                     parent2: Array, 
                     keys: Array, 
                     reproduction_probability: float, 
                     max_nodes: int, 
-                    operator_indices: Array) -> Tuple[Array, Array]:
+                    operator_indices: Array,
+                    num_ouputs: int) -> Tuple[Array, Array]:
     """
     Applies crossover to the trees in a pair of candidates.
 
@@ -354,7 +366,7 @@ def crossover_trees(parent1: Array,
     tuple of (Array, Array)
         Pair of candidates after crossover.
     """
-    _, _, child1, child2, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
-        parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices))
+    _, _, child1, child2, _, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
+        parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices, num_ouputs))
     
     return child1, child2

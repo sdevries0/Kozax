@@ -104,6 +104,7 @@ class GeneticProgramming:
                  num_populations: int = 1,
                  max_init_depth: int = 4,
                  max_nodes: int = 15,
+                 num_ouputs_per_tree: int = 1,
                  device_type: str = 'cpu',
                  complexity_objective: bool = False,
                  constant_sd: float = 1.0,
@@ -120,7 +121,7 @@ class GeneticProgramming:
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
                  sample_probability_factors: float | Tuple[float] = (0.0, 0.0)) -> None:
-        print("test")
+        
         self.layer_sizes = layer_sizes
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
@@ -136,7 +137,7 @@ class GeneticProgramming:
         assert self.num_trees > 0, "The number of trees should be larger than 0"
         assert tournament_size > 1, "The tournament size should be larger than 1"
         self.tournament_size = tournament_size
-        self.num_ouputs = 2
+        self.num_ouputs = num_ouputs_per_tree
 
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
@@ -219,7 +220,8 @@ class GeneticProgramming:
 
         self.partial_crossover = partial(crossover_trees, 
                                          operator_indices=self.operator_indices, 
-                                         max_nodes=self.max_nodes)
+                                         max_nodes=self.max_nodes,
+                                         num_ouputs=self.num_ouputs)
 
         self.reproduction_functions = [self.partial_crossover, self.mutate_pair, self.sample_pair]
 
@@ -482,7 +484,7 @@ class GeneticProgramming:
         self._warm_up_jit_functions(dummy_population, data)
 
         population = dummy_population
-        print(jnp.sum(population[:,:,:,-1,3] == 0))
+        print("invalid solutions:",  jnp.sum(population[:,:,:,-1,3] == 0), jnp.sum((population[:,:,:,:-1,3] > 0)*jnp.isin(population[:,:,:,:-1,0], self.variable_indices)))
 
         for g in range(self.num_generations):
             key, eval_key, sample_key = jr.split(key, 3)
@@ -495,7 +497,7 @@ class GeneticProgramming:
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
-                print(jnp.sum(population[:,:,:,-1,3] == 0))
+                print("invalid solutions:",  jnp.sum(population[:,:,:,-1,3] == 0), jnp.sum((population[:,:,:,:-1,3] > 0)*jnp.isin(population[:,:,:,:-1,0], self.variable_indices)))
 
         print("Final pareto front:")
         self.print_pareto_front(save_pareto_front, path_to_file)
@@ -562,11 +564,11 @@ class GeneticProgramming:
                                              self.migration_period, 
                                              self.migration_size, 
                                              self.reproduction_type_probabilities, 
-                                             self.reproduction_probabilities)
+                                             self.reproduction_probabilities,
+                                             self.variable_indices)
         
         self.current_generation += 1
-        # return self.jit_simplify_constants(new_populations)
-        return new_populations
+        return self.jit_simplify_constants(new_populations)
     
     def mutate_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
         """

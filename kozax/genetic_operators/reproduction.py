@@ -226,7 +226,7 @@ def evolve_population(population: Array,
     
     evolved_population = jnp.where(ranks[:,None,None,None] == 0, population, jnp.concatenate([left_children, right_children], axis=0))
 
-    return evolved_population
+    return evolved_population, reproduction_type, left_parents, right_parents
 
 def migrate_population(receiver: Array, 
                        sender: Array, 
@@ -282,7 +282,8 @@ def evolve_populations(jit_evolve_population: Callable,
                        migration_period: int, 
                        migration_size: int, 
                        reproduction_type_probabilities: Array, 
-                       reproduction_probabilities: Array) -> Array:
+                       reproduction_probabilities: Array,
+                       variable_indices) -> Array:
     """Evolves each population independently.
 
     Parameters
@@ -336,4 +337,5 @@ def evolve_populations(jit_evolve_population: Callable,
                                         reproduction_type_probabilities, 
                                         reproduction_probabilities, 
                                         population_indices)
+
     return new_population
