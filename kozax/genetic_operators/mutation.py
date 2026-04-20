@@ -523,9 +523,7 @@ def insert_operator(tree: Array,
     (sample_tree, max_nodes, max_init_depth, variable_indices, operator_indices, operator_probabilities, slots, coefficient_sd) = args
     tree_indices = jnp.tile(jnp.arange(max_nodes)[:, None], reps=(1, 4))
     select_key, sample_key, subtree_key, side_key = jr.split(key, 4)
-    node_ids = tree[:, 0]
-    is_operator = jnp.isin(node_ids, operator_indices)
-    mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=is_operator * 1.0)  # Sample node to be mutated
+    mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=(tree[:, 0]>0))  # Sample node to be mutated
 
     _, _, end_idx = jax.lax.while_loop(lambda carry: carry[1] > 0, find_end_idx, (tree, 1, mutate_idx))
 
@@ -552,7 +550,7 @@ def insert_operator(tree: Array,
     lower_tree = jax.lax.select(second_branch, jnp.where(tree_indices <= mutate_idx - subtree_size - 1, rolled_tree, rolled_subtree), 
                                 jnp.where(tree_indices <= end_idx - 1, rolled_subtree, rolled_tree))  # Place first and second subtree
     
-    child_2_branches = jnp.where((tree_indices <= mutate_idx - 1) & (tree_indices > mutate_idx - subtree_size - tree_size - 1), lower_tree, child)  # Insert subtrees in new tree
+    child_2_branches = jnp.where((tree_indices <= mutate_idx - 1) & (tree_indices >= mutate_idx - subtree_size - tree_size), lower_tree, child)  # Insert subtrees in new tree
 
     child_1_branch = jnp.where((tree_indices <= mutate_idx - 1) & (tree_indices >= mutate_idx - tree_size), rolled_tree, child)  # Insert old subtree in new tree
     
@@ -657,8 +655,8 @@ def get_mutations(tree: Array,
     """
     mutation_probs = jnp.ones(len(MUTATE_FUNCTIONS))
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] == 0) < 8, jnp.array([0., 1., 1., 1., 0.]), mutation_probs)  # Tree is too big to add more nodes
-    mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) <= 3, jnp.array([1., 1., 1., 0., 0.]), mutation_probs)  # Tree does not have enough operators
-    mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) == 1, jnp.array([1., 1., 0., 0., 0.]), mutation_probs)  # Tree does not have operators
+    mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) <= 3, jnp.array([1., 1., 1., 0., 1.]), mutation_probs)  # Tree does not have enough operators
+    mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) == 1, jnp.array([1., 1., 0., 0., 1.]), mutation_probs)  # Tree does not have operators
 
     return jr.choice(key, jnp.arange(len(MUTATE_FUNCTIONS)), p=mutation_probs)
 
