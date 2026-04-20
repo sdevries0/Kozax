@@ -120,7 +120,7 @@ class GeneticProgramming:
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
                  sample_probability_factors: float | Tuple[float] = (0.0, 0.0)) -> None:
-        print("test")
+        
         self.layer_sizes = layer_sizes
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
