@@ -22,6 +22,9 @@ class SymbolicRegressionFitnessFunction(BaseFitnessFunction):
         Evaluates the candidate on a task.
     """
 
+    def __init__(self):
+        super().__init__()
+
     def __call__(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> float:
         """
         Evaluates the candidate on a task.

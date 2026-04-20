@@ -292,8 +292,8 @@ def check_different_trees(carry: Tuple[Array, Array, Array, Array, Array, float,
     bool
         True if the offspring are different from the parents for all trees, False otherwise.
     """
-    parent1, parent2, child1, child2, _, _, _, _ = carry
-    return jnp.all(jax.vmap(check_different_tree)(parent1, parent2, child1, child2))
+    parent1, parent2, child1, child2, _, _, _, _, counter = carry
+    return jnp.all(jax.vmap(check_different_tree)(parent1, parent2, child1, child2)) & (counter < 3)
 
 def safe_crossover(carry: Tuple[Array, Array, Array, Array, Array, float, Array, Array]) -> Tuple[Array, Array, Array, Array, Array, float, Array, Array]:
     """
@@ -309,7 +309,7 @@ def safe_crossover(carry: Tuple[Array, Array, Array, Array, Array, float, Array,
     tuple of (Array, Array, Array, Array, Array, float, Array, Array)
         Updated tuple with the parent trees, child trees, and other parameters.
     """
-    parent1, parent2, _, _, keys, reproduction_probability, node_ids, operator_indices = carry
+    parent1, parent2, _, _, keys, reproduction_probability, node_ids, operator_indices, counter = carry
     index_key, type_key, new_key = jr.split(keys[0, 0], 3)
     _, cx_indices, _ = jax.lax.while_loop(lambda carry: jnp.sum(carry[1]) == 0, sample_indices, (index_key, jnp.zeros(parent1.shape[0]), reproduction_probability))
     crossover_types = jr.bernoulli(type_key, p=0.9, shape=(parent1.shape[0],))
@@ -319,7 +319,10 @@ def safe_crossover(carry: Tuple[Array, Array, Array, Array, Array, float, Array,
 
     keys = jr.split(new_key, keys.shape[:-1])
 
-    return parent1, parent2, child1, child2, keys, reproduction_probability, node_ids, operator_indices
+    child1 = jax.lax.select(counter >= 3, parent1, child1)
+    child2 = jax.lax.select(counter >= 3, parent2, child2)
+
+    return parent1, parent2, child1, child2, keys, reproduction_probability, node_ids, operator_indices, counter+1
 
 def crossover_trees(parent1: Array, 
                     parent2: Array, 
@@ -350,7 +353,7 @@ def crossover_trees(parent1: Array,
     tuple of (Array, Array)
         Pair of candidates after crossover.
     """
-    _, _, child1, child2, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
-        parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices))
-    
+    _, _, child1, child2, _, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
+        parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices, 0))
+
     return child1, child2
