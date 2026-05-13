@@ -317,7 +317,6 @@ def evolve_population(population: Array,
                                                                                              reproduction_probability, 
                                                                                              reproduction_functions)
     order = jnp.lexsort((-crowding_distances, ranks))
-    # order = jnp.argsort(ranks)
     evolved_population = jnp.where((population_indices < 5)[:,None,None,None], population[order], jnp.concatenate([left_children, right_children], axis=0))
 
     return evolved_population
