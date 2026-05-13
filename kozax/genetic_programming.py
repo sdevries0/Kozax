@@ -240,7 +240,10 @@ class GeneticProgramming:
         # Define parallel evaluation functions
         self.vmap_trees = jax.vmap(self.partial_fitness_function, in_axes=[0, 0, None])
         if self.n_objectives>1:
-            self.vmap_gradients = jax.vmap(jax.value_and_grad(lambda *args: (self.partial_fitness_function(*args)[0], self.partial_fitness_function(*args)[1:]), has_aux=True), in_axes=[0, 0, None])
+            def multi_obj_wrapper(*args):
+                result = self.partial_fitness_function(*args)
+                return result[0], result[1:]
+            self.vmap_gradients = jax.vmap(jax.value_and_grad(multi_obj_wrapper, has_aux=True), in_axes=[0, 0, None])
         else:
             self.vmap_gradients = jax.vmap(jax.value_and_grad(self.partial_fitness_function), in_axes=[0, 0, None])
 
@@ -266,7 +269,12 @@ class GeneticProgramming:
             fitness = self.vmap_trees(array[..., 3:], array[..., :3], data)
 
             # Regularize invalid solutions
-            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
+            if self.n_objectives > 1:
+                # For multi-objective, check if ANY objective is nan/inf for each candidate
+                candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(fitness)
+                nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+            else:
+                nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
             fitness = jnp.where(nan_or_inf, jnp.ones(fitness.shape) * self.max_fitness, fitness)
             
             return jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
@@ -831,7 +839,12 @@ class GeneticProgramming:
             loss = jnp.concatenate([loss[0][:,None], loss[1]], axis=-1)
 
         # Regularize invalid solutions
-        nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(loss)
+        if self.n_objectives > 1:
+            # For multi-objective, check if ANY objective is nan/inf for each candidate
+            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(loss)
+            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        else:
+            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(loss)
         loss = jnp.where(nan_or_inf, jnp.ones(loss.shape) * self.max_fitness, loss)
 
         loss = jnp.minimum(loss, self.max_fitness * jnp.ones_like(loss))
@@ -866,6 +879,13 @@ class GeneticProgramming:
 
         (last_candidates, _, _), out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
         last_loss = self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data)
+        if self.n_objectives > 1:
+            # For multi-objective, check if ANY objective is nan/inf for each candidate
+            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(last_loss)
+            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        else:
+            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(last_loss)
+        last_loss = jnp.where(nan_or_inf, jnp.ones(last_loss.shape) * self.max_fitness, last_loss)
 
         new_candidates, loss = out
 
