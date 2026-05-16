@@ -47,17 +47,20 @@ def evolve_trees(parent1: Array,
 
 def tournament_selection(population: Array, 
                          ranks: Array,
+                         crowding_distances: Array,
                          key: PRNGKey, 
                          tournament_size: int, 
                          population_indices: Array) -> Array:
-    """Selects a candidate for reproduction from a tournament.
+    """Selects a candidate for reproduction from a tournament using NSGA-II selection.
 
     Parameters
     ----------
     population : Array
         Population of candidates.
     ranks : Array
-        Ranks of candidates.
+        Dominance ranks of candidates.
+    crowding_distances : Array
+        Crowding distances of candidates.
     key : PRNGKey
         Random key.
     tournament_size : int
@@ -73,9 +76,18 @@ def tournament_selection(population: Array,
     tournament_key, winner_key = jr.split(key)
     indices = jr.choice(tournament_key, population_indices, shape=(tournament_size,), replace=False)
 
-    tournament_ranks = ranks[indices] + 1
+    tournament_ranks = ranks[indices]
+    tournament_distances = crowding_distances[indices]
+    
+    # NSGA-II selection: prefer lower rank, then higher crowding distance
+    # Create selection probabilities based on dominance and crowding
+    min_rank = jnp.min(tournament_ranks)
+    best_rank_mask = (tournament_ranks == min_rank)
 
-    winner_index = jr.choice(winner_key, indices, p=1/tournament_ranks)
+    max_distance = jnp.max(tournament_distances * best_rank_mask)
+    best_distance_mask = (tournament_distances * best_rank_mask) == max_distance
+    
+    winner_index = jr.choice(winner_key, indices, p=best_distance_mask)
 
     return population[winner_index]
 
@@ -120,47 +132,124 @@ def identify_non_dominated(metrics: Array) -> Array:
     
     return dominated_by_others
 
-def nsga2(metrics: Array) -> Array:
+def calculate_crowding_distance(metrics: Array, front_mask: Array) -> Array:
     """
-    Selects individuals for the next generation using NSGA-II without crowding distance.
+    Calculate crowding distance for solutions in a Pareto front.
+    
+    Parameters
+    ----------
+    metrics : Array
+        Array of shape (n_solutions, n_objectives) with metrics for each solution.
+    front_mask : Array
+        Boolean mask indicating which solutions belong to the current front.
+        
+    Returns
+    -------
+    Array
+        Crowding distances for all solutions (0 for solutions not in the front).
+    """
+    n_solutions, n_objectives = metrics.shape
+    distances = jnp.zeros(n_solutions)
+    
+    def compute_objective_distance(obj_idx):
+        # Extract metrics for this objective
+        obj_metrics = metrics[:, obj_idx]
+        
+        # Sort front solutions by this objective
+        front_obj_metrics = jnp.where(front_mask, obj_metrics, jnp.inf)
+        sorted_indices = jnp.argsort(front_obj_metrics)
+        sorted_values = front_obj_metrics[sorted_indices]
+        
+        # Mask for valid (finite) values
+        is_valid = (sorted_values < jnp.inf)
+        
+        # Calculate range for normalization
+        valid_values = jnp.where(is_valid, sorted_values, 0.0)
+        min_val = jnp.min(jnp.where(is_valid, sorted_values, jnp.inf))
+        max_val = jnp.max(valid_values)
+        obj_range = jnp.maximum(max_val - min_val, 1e-10)
+        
+        # Calculate distances using vectorized operations
+        prev_values = jnp.roll(sorted_values, 1)
+        next_values = jnp.roll(sorted_values, -1)
+        prev_valid = jnp.roll(is_valid, 1)
+        next_valid = jnp.roll(is_valid, -1)
+        
+        # Find boundary positions using cumulative sum
+        cumsum_valid = jnp.cumsum(is_valid)
+        total_valid = cumsum_valid[-1]
+        is_first = is_valid & (cumsum_valid == 1)
+        is_last = is_valid & (cumsum_valid == total_valid)
+        is_boundary = is_first | is_last
+        
+        # Calculate crowding contribution for each sorted position
+        crowding_contrib = jnp.where(
+            is_valid & is_boundary,
+            jnp.inf,  # Boundary points get infinite distance
+            jnp.where(
+                is_valid & prev_valid & next_valid & (~is_boundary),
+                (next_values - prev_values) / obj_range,  # Internal points
+                0.0  # Invalid or edge cases
+            )
+        )
+        
+        # Map back to original indices using scatter_add
+        obj_distances = jnp.zeros(n_solutions).at[sorted_indices].add(crowding_contrib)
+        
+        return obj_distances
+    
+    # Vectorize over all objectives and sum distances
+    obj_distances_all = jax.vmap(compute_objective_distance)(jnp.arange(n_objectives))
+    distances = jnp.sum(obj_distances_all, axis=0)
+    
+    return distances
+
+def nsga2(metrics: Array) -> Tuple[Array, Array]:
+    """
+    Performs NSGA-II ranking with crowding distance calculation.
 
     Parameters
     ----------
     metrics : Array
         Array of shape (population_size, n_objectives) with metrics for each individual.
-    selection_size : int
-        The number of individuals to select.
 
     Returns
     -------
-    Array
-        Indices of the selected individuals.
+    Tuple[Array, Array]
+        Dominance ranks and crowding distances for each individual.
     """
-    all_indices = jnp.ones(metrics.shape[0])
+    n_solutions = metrics.shape[0]
+    all_indices = jnp.ones(n_solutions)
+    crowding_distances = jnp.zeros(n_solutions)
 
     def cond_fun(state):
-        selected_count, remaining_indices, _ = state
+        selected_count, remaining_indices, _, _ = state
         return jnp.sum(remaining_indices) > 0
 
     def body_fun(state):
-        current_rank, remaining_indices, ranks = state
+        current_rank, remaining_indices, ranks, distances = state
         remaining_metrics = jnp.where(remaining_indices[:, None], metrics, jnp.inf * jnp.ones_like(metrics))
         non_dominated = identify_non_dominated(remaining_metrics)
         
+        # Calculate crowding distance for this front
+        front_crowding = calculate_crowding_distance(metrics, non_dominated)
+        
         ranks = jnp.where(non_dominated, current_rank * jnp.ones_like(ranks), ranks)
+        distances = jnp.where(non_dominated, front_crowding, distances)
         
         remaining_indices = jnp.where(non_dominated, jnp.zeros_like(remaining_indices), remaining_indices)
         
-        return current_rank + 1, remaining_indices, ranks
+        return current_rank + 1, remaining_indices, ranks, distances
 
-    initial_state = (0, all_indices, all_indices * 0)
+    initial_state = (0, all_indices, all_indices * 0, crowding_distances)
     
-    _, _, ranks = jax.lax.while_loop(cond_fun, body_fun, initial_state)
+    _, _, ranks, distances = jax.lax.while_loop(cond_fun, body_fun, initial_state)
 
-    return ranks
+    return ranks, distances
 
 def evolve_population(population: Array, 
                       ranks: Array,
+                      crowding_distances: Array,
                       key: PRNGKey, 
                       reproduction_type_probabilities: Array, 
                       reproduction_probability: float, 
@@ -176,7 +265,9 @@ def evolve_population(population: Array,
     population : Array
         Population of candidates.
     ranks : Array
-        Ranks of the candidates.
+        Dominance ranks of the candidates.
+    crowding_distances : Array
+        Crowding distances of the candidates.
     key : PRNGKey
         Random key.
     reproduction_type_probabilities : Array
@@ -203,14 +294,16 @@ def evolve_population(population: Array,
     left_key, right_key, repro_key, evo_key = jr.split(key, 4)
 
     # Sample parents for reproduction
-    left_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None])(population, 
+    left_parents = jax.vmap(tournament_selection, in_axes=[None, None, None, 0, None, None])(population, 
                                                                                              ranks,
+                                                                                             crowding_distances,
                                                                                              jr.split(left_key, population_size//2), 
                                                                                              tournament_size,
                                                                                              population_indices)
     
-    right_parents = jax.vmap(tournament_selection, in_axes=[None, None, 0, None, None])(population, 
+    right_parents = jax.vmap(tournament_selection, in_axes=[None, None, None, 0, None, None])(population, 
                                                                                               ranks,
+                                                                                              crowding_distances,
                                                                                               jr.split(right_key, population_size//2), 
                                                                                               tournament_size,
                                                                                               population_indices)
@@ -223,8 +316,8 @@ def evolve_population(population: Array,
                                                                                              reproduction_type, 
                                                                                              reproduction_probability, 
                                                                                              reproduction_functions)
-    
-    evolved_population = jnp.where(ranks[:,None,None,None] == 0, population, jnp.concatenate([left_children, right_children], axis=0))
+    order = jnp.lexsort((-crowding_distances, ranks))
+    evolved_population = jnp.where((population_indices < 5)[:,None,None,None], population[order], jnp.concatenate([left_children, right_children], axis=0))
 
     return evolved_population
 
@@ -234,45 +327,28 @@ def migrate_population(receiver: Array,
                        sender_metrics: Array, 
                        receiver_ranks: Array,
                        sender_ranks: Array,
-                       migration_size: int, 
-                       population_indices: Array) -> Tuple[Array, Array]:
-    """Unfit candidates from one population are replaced with fit candidates from another population.
+                       receiver_distances: Array,
+                       sender_distances: Array,
+                       migration_size: int,
+                       population_indices: Array) -> Tuple[Array, Array, Array, Array]:
+    """Replace worst receiver candidates with best sender candidates.
 
-    Parameters
-    ----------
-    receiver : Array
-        Population that receives new candidates.
-    sender : Array
-        Population that sends fit candidates.
-    receiver_fitness : Array
-        Fitness of the candidates in the receiving population.
-    sender_fitness : Array
-        Fitness of the candidates in the sending population.
-    receiver_ranks : Array
-        Dominance ranks of candidates in the receiving population.
-    sender_ranks : Array
-        Dominance ranks of candidates in the sending population.
-    migration_size : int
-        How many candidates are migrated to new population.
-    population_indices : Array
-        Indices of the population.
-
-    Returns
-    -------
-    Tuple[Array, Array, Array]
-        Population after migration and the corresponding fitness and dominance ranks.
+    Ordering:
+    - Best: rank ascending, then crowding distance descending.
+    - Worst: rank descending, then crowding distance ascending.
     """
-    # Identify the Pareto front of the sender population
-    sender_dominated_ranks = jnp.argsort(sender_ranks, descending=False)
-    receiver_dominated_ranks = jnp.argsort(receiver_ranks, descending=True)
+    # Best sender individuals: low rank first, and within rank high crowding distance first
+    sender_order = jnp.lexsort((-sender_distances, sender_ranks))
 
-    # Replace the selected locations in the receiver with Pareto front individuals
-    migrated_population = jnp.where((population_indices < migration_size)[:,None,None,None], sender[sender_dominated_ranks], receiver[receiver_dominated_ranks])
-    migrated_metrics = jnp.where((population_indices < migration_size)[:,None], sender_metrics[sender_dominated_ranks], receiver_metrics[receiver_dominated_ranks])
+    # Worst receiver individuals: high rank first, and within rank low crowding distance first
+    receiver_order = jnp.lexsort((receiver_distances, -receiver_ranks))
 
-    new_ranks = nsga2(migrated_metrics)
+    migrated_population = jnp.where((population_indices < migration_size)[:,None,None,None], sender[sender_order], receiver[receiver_order])
+    migrated_metrics = jnp.where((population_indices < migration_size)[:,None], sender_metrics[sender_order], receiver_metrics[receiver_order])
 
-    return migrated_population, migrated_metrics, new_ranks
+    new_ranks, new_crowding_distances = nsga2(migrated_metrics)
+
+    return migrated_population, migrated_metrics, new_ranks, new_crowding_distances
 
 def evolve_populations(jit_evolve_population: Callable, 
                        populations: Array, 
@@ -315,24 +391,26 @@ def evolve_populations(jit_evolve_population: Callable,
     num_populations, population_size, _, _, _ = populations.shape
     population_indices = jnp.arange(population_size)
 
-    nsga_ranks = jax.vmap(nsga2)(metrics)
+    nsga_ranks, crowding_distances = jax.vmap(nsga2, out_axes=(0, 0))(metrics)
 
     # Migrate candidates between populations. The populations and fitnesses are rolled for circular migration.
-    populations, metrics, nsga_ranks = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
-                                    jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, 0, 0, None, None]), 
-                                    jax.vmap(lambda receiver, sender, receiver_fitness, sender_fitness, receiver_ranks, sender_ranks, migration_size, population_indices: (receiver, receiver_fitness, receiver_ranks), 
-                                             in_axes=[0, 0, 0, 0, 0, 0, None, None]), 
+    populations, metrics, nsga_ranks, crowding_distances = jax.lax.cond((num_populations > 1) & (((current_generation+1)%migration_period) == 0), 
+                                    jax.vmap(migrate_population, in_axes=[0, 0, 0, 0, 0, 0, 0, 0, None, None]), 
+                                    lambda pops, rolled_pops, mets, rolled_mets, ranks, rolled_ranks, distances, rolled_distances, migration_size, indices: (pops, mets, ranks, crowding_distances), 
                                         populations, 
                                         jnp.roll(populations, 1, axis=0), 
                                         metrics, 
                                         jnp.roll(metrics, 1, axis=0), 
                                         nsga_ranks,
-                                        jnp.roll(nsga_ranks, 1, axis=0), 
-                                        migration_size, 
+                                        jnp.roll(nsga_ranks, 1, axis=0),
+                                        crowding_distances, 
+                                        jnp.roll(crowding_distances, 1, axis=0),
+                                        migration_size,
                                         population_indices)
-    
+
     new_population = jit_evolve_population(populations, 
                                         nsga_ranks,
+                                        crowding_distances,
                                         jr.split(key, num_populations), 
                                         reproduction_type_probabilities, 
                                         reproduction_probabilities, 

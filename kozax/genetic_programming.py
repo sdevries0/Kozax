@@ -139,11 +139,14 @@ class GeneticProgramming:
         self.tournament_size = tournament_size
         self.num_ouputs = num_ouputs_per_tree
 
+        self.n_objectives = fitness_function.n_objectives
+        self.complexity_objective = complexity_objective
+        if (self.n_objectives > 1) and self.complexity_objective:
+            print("To reduce the size of the shown Pareto front, for each complexity only the solutions that are best at each objective are printed.")
+
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
 
-        self.complexity_objective = complexity_objective
-        assert constant_sd > 0, "The standard deviation of the constants should be larger than 0"
         self.constant_sd = constant_sd
 
         assert migration_period > 1, "The migration period should be larger than 1"
@@ -215,7 +218,7 @@ class GeneticProgramming:
                             self.operator_probabilities, 
                             self.slots, 
                             self.constant_sd)
-        
+
         self.mutate_trees = initialize_mutation_functions(self.mutate_args)
 
         self.partial_crossover = partial(crossover_trees, 
@@ -230,7 +233,7 @@ class GeneticProgramming:
                                                      num_trees=self.num_trees, 
                                                      population_size=population_size,
                                                      tournament_size=self.tournament_size),
-                                                    in_axes=[0, 0, 0, 0, 0, None]), donate_argnums=(0))
+                                                    in_axes=[0, 0, 0, 0, 0, 0, None]), donate_argnums=(0))
         
         self.jit_simplify_constants = jax.jit(jax.vmap(jax.vmap(jax.vmap(self.simplify_constants))))
 
@@ -240,7 +243,13 @@ class GeneticProgramming:
 
         # Define parallel evaluation functions
         self.vmap_trees = jax.vmap(self.partial_fitness_function, in_axes=[0, 0, None])
-        self.vmap_gradients = jax.vmap(jax.value_and_grad(self.partial_fitness_function), in_axes=[0, 0, None])
+        if self.n_objectives>1:
+            def multi_obj_wrapper(*args):
+                result = self.partial_fitness_function(*args)
+                return result[0], result[1:]
+            self.vmap_gradients = jax.vmap(jax.value_and_grad(multi_obj_wrapper, has_aux=True), in_axes=[0, 0, None])
+        else:
+            self.vmap_gradients = jax.vmap(jax.value_and_grad(self.partial_fitness_function), in_axes=[0, 0, None])
 
         assert device_type in ["cpu", "gpu", "tpu"], "The device type is not supported"
         devices = mesh_utils.create_device_mesh((len(jax.devices(device_type)),))
@@ -253,10 +262,10 @@ class GeneticProgramming:
         self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
 
-        if self.constant_optimization:
-            self.optimize_constants_function = partial(self.optimize_constants_with_gradients, n_epoch=constant_optimization_steps)
-        else:
-            self.optimize_constants_function = None
+        if (self.n_objectives>1) and self.constant_optimization:
+            print("Note that only the first objective is used for constant optimisation.")
+
+        self.optimize_constants_function = partial(self.optimize_constants, n_epoch=constant_optimization_steps)
 
         # Define sharded functions for evaluation and optimization
         @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_vma=False)
@@ -264,7 +273,12 @@ class GeneticProgramming:
             fitness = self.vmap_trees(array[..., 4:], array[..., :4], data)
 
             # Regularize invalid solutions
-            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
+            if self.n_objectives > 1:
+                # For multi-objective, check if ANY objective is nan/inf for each candidate
+                candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(fitness)
+                nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+            else:
+                nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(fitness)
             fitness = jnp.where(nan_or_inf, jnp.ones(fitness.shape) * self.max_fitness, fitness)
             
             return jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
@@ -310,6 +324,7 @@ class GeneticProgramming:
         # Warm up evolve function
         dummy_population = self.evolve_population(dummy_population, dummy_fitness, dummy_key)
         jax.block_until_ready(dummy_population)
+        self.reset()
         print(f"Finished compilation in {(time.time() - start):.2f} seconds")
 
     def map_breadth_indices_to_depth_indices(self, depth: int) -> Array:
@@ -428,7 +443,8 @@ class GeneticProgramming:
         counter = 0
         for layer_i, var_list in enumerate(variable_list):
             p = jnp.zeros((data_index + 1))
-            p = p.at[0].set(0.1)
+            if self.constant_sd > 0.0:
+                p = p.at[0].set(0.1)
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
                     var = var_or_tuple
@@ -517,7 +533,10 @@ class GeneticProgramming:
         self.current_generation = 0
 
         # The Pareto front keeps track of the best solutions at each complexity level
-        self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 5)))        
+        if self.n_objectives==1:
+            self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 5)))    
+        else:
+            self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, 5)))        
 
     def initialize_population(self, key: PRNGKey) -> Array:
         """
@@ -556,10 +575,7 @@ class GeneticProgramming:
         Array
             Evolved populations.
         """
-
         populations, fitness = jax.vmap(self.punish_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
-
-        fitness = jnp.expand_dims(fitness, axis=2) #Expand fitness to match the shape of the populations
         
         if self.complexity_objective:
             complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
@@ -779,12 +795,20 @@ class GeneticProgramming:
 
         fitness = self.jit_eval(flat_populations, data) # Evaluate the candidates
 
+        if self.n_objectives > 1:
+            assert (len(fitness.shape) == 2) & (fitness.shape[-1]==self.n_objectives), "The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`."
+        else:
+            assert (len(fitness.shape)==1), "The fitness contains multiple values per candidate, but only one objective is required. You can set the number of objectives in your fitness function with `num_objectives`."
+
         # Optimize constants of the best candidates in the current generation
         if self.constant_optimization:
             self.optimizer = self.optimizer_class(self.constant_step_size)
 
             # Get best candidates
-            best_candidates_idx = jnp.argsort(fitness)[:self.optimize_constants_elite]
+            if self.n_objectives > 1:
+                best_candidates_idx = jnp.argsort(fitness[:,0])[:self.optimize_constants_elite]
+            else:
+                best_candidates_idx = jnp.argsort(fitness)[:self.optimize_constants_elite]
             best_candidates = flat_populations[best_candidates_idx]
 
             # Optimize constants of the best candidates with profiling
@@ -794,9 +818,7 @@ class GeneticProgramming:
                 jr.split(key, self.optimize_constants_elite), 
                 self.constant_step_size
                 )
-            
             optimized_population = jax.block_until_ready(optimized_population)
-
             # Store updated candidates and fitness
             flat_populations = flat_populations.at[best_candidates_idx].set(optimized_population)
             fitness = fitness.at[best_candidates_idx].set(optimized_fitness)
@@ -808,7 +830,7 @@ class GeneticProgramming:
         self.update_pareto_front(fitness, flat_populations)
 
         # Reshape the populations into the subpopulations
-        fitness = fitness.reshape((self.num_populations, self.population_size))
+        fitness = fitness.reshape((self.num_populations, self.population_size, self.n_objectives))
         populations = flat_populations.reshape((self.num_populations, self.population_size, *flat_populations.shape[1:]))
 
         return fitness, populations
@@ -831,9 +853,17 @@ class GeneticProgramming:
         """
         candidates, states, data = carry
         loss, gradients = self.vmap_gradients(candidates[..., 4:], candidates[..., :4], data)  # Parallel computation of the loss and gradients
+        
+        if isinstance(loss, tuple):
+            loss = jnp.concatenate([loss[0][:,None], loss[1]], axis=-1)
 
         # Regularize invalid solutions
-        nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(loss)
+        if self.n_objectives > 1:
+            # For multi-objective, check if ANY objective is nan/inf for each candidate
+            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(loss)
+            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        else:
+            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(loss)
         loss = jnp.where(nan_or_inf, jnp.ones(loss.shape) * self.max_fitness, loss)
 
         loss = jnp.minimum(loss, self.max_fitness * jnp.ones_like(loss))
@@ -843,7 +873,7 @@ class GeneticProgramming:
 
         return (new_candidates, states, data), (candidates, loss)
 
-    def optimize_constants_with_gradients(self, candidates: Array, data: Tuple, key: PRNGKey, step_size: float, n_epoch: int) -> Tuple[Array, Array]:
+    def optimize_constants(self, candidates: Array, data: Tuple, key: PRNGKey, step_size: float, n_epoch: int) -> Tuple[Array, Array]:
         """
         optimizes the constants in the candidates.
 
@@ -866,12 +896,28 @@ class GeneticProgramming:
 
         states = jax.vmap(self.optimizer.init)(candidates[..., 4:])  # Initialize optimizers for each candidate
 
-        _, out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
+        (last_candidates, _, _), out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
+        last_loss = self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data)
+        if self.n_objectives > 1:
+            # For multi-objective, check if ANY objective is nan/inf for each candidate
+            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(last_loss)
+            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        else:
+            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(last_loss)
+        last_loss = jnp.where(nan_or_inf, jnp.ones(last_loss.shape) * self.max_fitness, last_loss)
 
         new_candidates, loss = out
 
-        fitness = jnp.min(loss, axis=0)  # Get best fitness during constant optimization
-        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(new_candidates, jnp.argmin(loss, axis=0))  # Get best candidate during constant optimization
+        loss = jnp.concatenate([loss, last_loss[None]], axis=0)
+        new_candidates = jnp.concatenate([new_candidates, last_candidates[None]], axis=0)
+
+        if self.n_objectives > 1:
+            best_indices = jnp.argmin(loss[:,:,0], axis=0)
+        else:
+            best_indices = jnp.argmin(loss, axis=0)
+
+        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss, best_indices)  # Get best fitness during constant optimization
+        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(new_candidates, best_indices)  # Get best candidate during constant optimization
 
         return fitness, candidates
 
@@ -895,7 +941,7 @@ class GeneticProgramming:
         _, indices, counts = jnp.unique(population, return_index=True, return_counts=True, axis=0, size=self.population_size)
         population = population[indices]
         fitness = fitness[indices]
-        return population, jnp.where(counts > 0, fitness, self.max_fitness)
+        return population, jnp.where(counts[:,None] > 0, fitness, self.max_fitness * jnp.ones_like(fitness))
 
     def update_pareto_front(self, fitness: Array, population: Array) -> None:
         """
@@ -910,12 +956,22 @@ class GeneticProgramming:
         """
         current_pareto_fitness, current_pareto_solutions = self.pareto_front
 
-        _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
+        try:
+            _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
+        except:
+            raise("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.")
+
         _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
 
+        if self.n_objectives==1:
+            _fitness = _fitness[:,None]
+
         # Compute complexity of the current population
-        complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_population)[:,None]
-        metrics = jnp.concatenate([_fitness[:,None], complexity], axis=-1)
+        if (self.n_objectives == 1) or self.complexity_objective:
+            complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_population)[:,None]
+            metrics = jnp.concatenate([_fitness, complexity], axis=-1)
+        else:
+            metrics = _fitness
 
         # For each solution i, check if it's dominated by any other solution j
         
@@ -939,15 +995,242 @@ class GeneticProgramming:
         j_dominates_i = j_dominates_i & mask
         
         # A solution is non-dominated if it's not dominated by any other solution
-        dominated_by_others = ~jnp.any(j_dominates_i, axis=1)
+        non_dominated = ~jnp.any(j_dominates_i, axis=1)
+
+
+        # _pareto_front = jnp.where(non_dominated[:,None,None,None], padded_population, jnp.zeros_like(padded_population))
+        # _pareto_fitness = jnp.where(non_dominated[:,None], padded_fitness, self.max_fitness * jnp.ones_like(padded_fitness))
+
+        # _, unique_indices = jnp.unique(_pareto_front, return_index=True, axis=0)
+
+        # unique_indices = unique_indices[jnp.all(_pareto_fitness[unique_indices] != self.max_fitness, axis=-1)]
+
+        _pareto_front = _population[non_dominated]
+        _pareto_fitness = _fitness[non_dominated]
+
+        if self.n_objectives==1:
+            _pareto_fitness = _pareto_fitness[:,0]
+
+        # self.pareto_front = (_pareto_fitness[unique_indices], _pareto_front[unique_indices])
+        self.pareto_front = (_pareto_fitness, _pareto_front)
+
+    def print_pareto_front(self, save: bool = False, path_to_file: str = None):
+        if self.n_objectives == 1:
+            self.print_pareto_front_single(save, path_to_file)
+        elif self.complexity_objective:
+            self.print_pareto_front_multi_with_complexity(save, path_to_file)
+        else:
+            self.print_pareto_front_multi_no_complexity(save, path_to_file)
+
+    def print_pareto_front_multi_no_complexity(self, save: bool = False, path_to_file: str = None) -> None:
+        """
+        Prints the Pareto front when complexity is NOT an objective.
+        Solutions are sorted by first objective, then second, etc., ignoring complexity.
+
+        Parameters
+        ----------
+        save : bool, optional
+            Whether to save the Pareto front to a file.
+        path_to_file : str, optional
+            Name of the file to save the Pareto front.
+        """
+        # Check if path exists when saving is requested
+        if save:
+            assert path_to_file is not None, "A file name must be provided when saving the Pareto front"
+            import os
+            # Check if directory exists and create it if needed
+            directory = os.path.dirname(path_to_file)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory)
+
+        pareto_fitness, pareto_solutions = self.pareto_front
+
+        # Filter out solutions with max_fitness in any objective
+        valid_mask = jnp.all(pareto_fitness != self.max_fitness, axis=1)
+        pareto_fitness = pareto_fitness[valid_mask]
+        pareto_solutions = pareto_solutions[valid_mask]
+
+        # Sort by objectives: first objective, then second, etc.
+        # Create sorting keys for lexicographic ordering
+        sort_keys = []
+        for obj_idx in range(self.n_objectives):
+            sort_keys.append(pareto_fitness[:, -obj_idx - 1])
         
-        pareto_indices = jnp.nonzero(dominated_by_others)[0]
+        # Lexicographic sort
+        sorted_indices = jnp.lexsort(sort_keys)
+        pareto_fitness = pareto_fitness[sorted_indices]
+        pareto_solutions = pareto_solutions[sorted_indices]
 
-        pareto_solutions, unique_indices = jnp.unique(_population[pareto_indices], return_index=True, axis=0)
+        if save:
+            pareto_table = ['Fitness']
+            for i in range(self.num_trees):
+                pareto_table.append(f'Equation {i}')
+            pareto_table = [tuple(pareto_table)]
 
-        self.pareto_front = (_fitness[pareto_indices][unique_indices], pareto_solutions)
+        expression_strings = []  # Track printed equations to avoid duplicates
 
-    def print_pareto_front(self, save: bool = False, path_to_file: str = None) -> None:
+        # Print all solutions in order, avoiding duplicates
+        for c in range(pareto_fitness.shape[0]):
+            string_equations = self.expression_to_string(pareto_solutions[c])
+            fitness = pareto_fitness[c]
+            
+            # Save if requested
+            if save:
+                if self.num_trees > 1:
+                    temp = (fitness,)
+                    for tree in string_equations:
+                        temp += (tree,)
+                    pareto_table.append(temp)
+                else:
+                    pareto_table.append((fitness, string_equations))
+            
+            # Only print if we haven't seen this equation before
+            if string_equations not in expression_strings:
+                expression_strings.append(string_equations)
+                
+                # Print solution
+                if self.num_trees > 1:
+                    print(f"Fitness: {fitness}, equations: {string_equations}")
+                else:
+                    print(f"Fitness: {fitness}, equation: {string_equations}")
+
+        if save:
+            np.savetxt(f'{path_to_file}/pareto_front.csv', pareto_table, delimiter=',', fmt='%s')
+
+    def print_pareto_front_multi_with_complexity(self, save: bool = False, path_to_file: str = None) -> None:
+        """
+        Prints the Pareto front when complexity IS an objective.
+        Solutions are sorted by complexity, and shows the best solution for each objective at each complexity level.
+
+        Parameters
+        ----------
+        save : bool, optional
+            Whether to save the Pareto front to a file.
+        path_to_file : str, optional
+            Name of the file to save the Pareto front.
+        """
+        # Check if path exists when saving is requested
+        if save:
+            assert path_to_file is not None, "A file name must be provided when saving the Pareto front"
+            import os
+            # Check if directory exists and create it if needed
+            directory = os.path.dirname(path_to_file)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory)
+
+        pareto_fitness, pareto_solutions = self.pareto_front
+
+        # Filter out solutions with max_fitness in any objective
+        valid_mask = jnp.all(pareto_fitness != self.max_fitness, axis=1)
+        pareto_fitness = pareto_fitness[valid_mask]
+        pareto_solutions = pareto_solutions[valid_mask]
+
+        # Calculate complexities
+        complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
+
+        # Sort by complexity first
+        sorted_indices = jnp.argsort(complexities)
+        pareto_fitness = pareto_fitness[sorted_indices]
+        pareto_solutions = pareto_solutions[sorted_indices]
+        complexities = complexities[sorted_indices]
+
+        if save:
+            pareto_table = ['Complexity', 'Fitness']
+            for i in range(self.num_trees):
+                pareto_table.append(f'Equation {i}')
+            pareto_table = [tuple(pareto_table)]
+
+        printed_complexities = {}  # Track solutions by complexity level
+        expression_strings = []  # Track printed equations to avoid duplicates
+
+        # Group solutions by complexity level
+        for c in range(complexities.shape[0]):
+            string_equations = self.expression_to_string(pareto_solutions[c])
+            complexity = complexities[c].item()
+            fitness = pareto_fitness[c]
+            
+            # Always save all solutions
+            if save:
+                if self.num_trees > 1:
+                    temp = (complexity, fitness)
+                    for tree in string_equations:
+                        temp += (tree,)
+                    pareto_table.append(temp)
+                else:
+                    pareto_table.append((complexity, fitness, string_equations))
+            
+            # Group by complexity level
+            if complexity not in printed_complexities:
+                printed_complexities[complexity] = []
+            
+            printed_complexities[complexity].append({
+                'fitness': fitness,
+                'equations': string_equations,
+                'index': c
+            })
+        
+        # For each complexity level, find solutions that are best in at least one objective
+        for complexity in sorted(printed_complexities.keys()):
+            solutions = printed_complexities[complexity]
+            
+            if len(solutions) == 1:
+                # Only one solution at this complexity, check if we haven't printed this equation before
+                sol = solutions[0]
+                if sol['equations'] not in expression_strings:
+                    expression_strings.append(sol['equations'])
+                    # Only show the first n_objectives (fitness function objectives, not complexity)
+                    fitness_display = sol['fitness'][:self.n_objectives]
+                    
+                    if self.num_trees > 1:
+                        print(f"Complexity: {complexity}, fitness: {fitness_display}, equations: {sol['equations']}")
+                    else:
+                        print(f"Complexity: {complexity}, fitness: {fitness_display}, equation: {sol['equations']}")
+            else:
+                # Multiple solutions, find best for each objective (excluding complexity)
+                best_solutions = set()  # Use set to avoid duplicates
+                
+                # When complexity_objective is True, fitness function objectives are first n_objectives,
+                # and complexity is appended as the last objective
+                num_fitness_objectives = self.n_objectives
+                
+                for obj_idx in range(num_fitness_objectives):
+                    # Find minimum fitness for this objective at this complexity
+                    min_fitness = min(sol['fitness'][obj_idx] for sol in solutions)
+                    
+                    # Add all solutions that achieve this minimum
+                    for sol_idx, sol in enumerate(solutions):
+                        if sol['fitness'][obj_idx] == min_fitness:
+                            best_solutions.add(sol_idx)
+                
+                # Print only the best solutions, avoiding equation duplicates
+                for sol_idx in sorted(best_solutions):
+                    sol = solutions[sol_idx]
+                    
+                    # Only print if we haven't seen this equation before
+                    if sol['equations'] not in expression_strings:
+                        expression_strings.append(sol['equations'])
+                        
+                        # Find which objectives this solution is best in
+                        best_objectives = []
+                        for obj_idx in range(num_fitness_objectives):
+                            min_fitness = min(s['fitness'][obj_idx] for s in solutions)
+                            if sol['fitness'][obj_idx] == min_fitness:
+                                best_objectives.append(f"obj{obj_idx}")
+                        
+                        best_obj_str = f" (best in: {', '.join(best_objectives)})" if len(best_objectives) > 0 else ""
+                        
+                        # Only show the first n_objectives (fitness function objectives)
+                        fitness_display = sol['fitness'][:num_fitness_objectives]
+                        
+                        if self.num_trees > 1:
+                            print(f"Complexity: {complexity}, fitness: {fitness_display}, equations: {sol['equations']}{best_obj_str}")
+                        else:
+                            print(f"Complexity: {complexity}, fitness: {fitness_display}, equation: {sol['equations']}{best_obj_str}")
+
+        if save:
+            np.savetxt(f'{path_to_file}/pareto_front.csv', pareto_table, delimiter=',', fmt='%s')
+
+    def print_pareto_front_single(self, save: bool = False, path_to_file: str = None) -> None:
         """
         Prints the Pareto front.
 
@@ -969,6 +1252,11 @@ class GeneticProgramming:
                 os.makedirs(directory)
 
         pareto_fitness, pareto_solutions = self.pareto_front
+
+        # Filter out solutions with max_fitness
+        valid_mask = pareto_fitness != self.max_fitness
+        pareto_fitness = pareto_fitness[valid_mask]
+        pareto_solutions = pareto_solutions[valid_mask]
 
         complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
 

@@ -54,6 +54,7 @@ class ODEFitnessFunction(BaseFitnessFunction):
     """
 
     def __init__(self, solver: diffrax.AbstractSolver = diffrax.Euler(), dt0: float = 0.01, max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
+        super.__init__()
         self.dt0 = dt0
         self.MSE = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys - true_ys), axis=-1))/jnp.mean(jnp.abs(true_ys))
         self.system = diffrax.ODETerm(self.drift)

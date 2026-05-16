@@ -110,12 +110,12 @@ def check_invalid_operator_node(carry: Tuple[Array, PRNGKey, int, int, int, Arra
     bool
         Whether the old and new operator are different and a valid subtree can be sampled.
     """
-    tree, _, mutate_idx, new_operator, slots, _, _ = carry
+    tree, _, mutate_idx, new_operator, slots, operator_indices, _ = carry
     _, _, end_idx = jax.lax.while_loop(lambda carry: carry[1] > 0, find_end_idx, (tree, 1, mutate_idx))
     subtree_size = mutate_idx - end_idx
     empty_nodes = jnp.sum(tree[:, 0] == 0)
     new_tree_size = jax.lax.select(slots[new_operator] == 2, 7, 8)
-    return (tree[mutate_idx, 0] == new_operator) | (empty_nodes + subtree_size < new_tree_size)
+    return ((tree[mutate_idx, 0] == new_operator) * (len(operator_indices)>1)) | (empty_nodes + subtree_size < new_tree_size)
 
 def sample_operator_node(carry: Tuple[Array, PRNGKey, int, int, int, Array, Array]) -> Tuple[Array, PRNGKey, int, int, int, Array, Array]:
     """Samples an operator node to be replaced in the tree and a new operator node.
@@ -565,7 +565,8 @@ def mutate_tree(tree: Array,
     return mutated_tree
 
 def get_mutations(tree: Array, 
-                  key: PRNGKey) -> int:
+                  key: PRNGKey,
+                  operator_indices: Array) -> int:
     """Samples a mutation function to apply to the tree.
 
     Parameters
@@ -589,6 +590,7 @@ def get_mutations(tree: Array,
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] == 0) < 8, jnp.array([0., 1., 1., 1., 0.]), mutation_probs)  # Tree is too big to add more nodes
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) <= 3, jnp.array([1., 1., 1., 0., 1.]), mutation_probs)  # Tree does not have enough operators
     mutation_probs = jax.lax.select(jnp.sum(tree[:, 0] != 0) == 1, jnp.array([1., 1., 0., 0., 1.]), mutation_probs)  # Tree does not have operators
+    mutation_probs = mutation_probs.at[2].set(mutation_probs[2] * (len(operator_indices)>1))
 
     return jr.choice(key, jnp.arange(len(MUTATE_FUNCTIONS)), p=mutation_probs)
 
@@ -608,12 +610,14 @@ def initialize_mutation_functions(mutate_args: Tuple) -> Callable:
     Callable
         A jittable mutation function.
     """
+    operator_indices = mutate_args[4]
     partial_mutate_functions = [partial(f, args=mutate_args) for f in MUTATE_FUNCTIONS]  # Set args as static argument in mutation functions
 
     def mutate_trees(trees: Array, 
                      keys: PRNGKey, 
                      reproduction_probability: float, 
-                     variable_array: Array) -> Array:
+                     variable_array: Array,
+                     ) -> Array:
         """Applies a mutation to a batch of trees.
 
         Parameters
@@ -633,7 +637,7 @@ def initialize_mutation_functions(mutate_args: Tuple) -> Callable:
             The mutated trees.
         """
         _, mutate_indices, _ = jax.lax.while_loop(lambda carry: jnp.sum(carry[1])==0, sample_indices, (keys[0], jnp.zeros(trees.shape[0]), reproduction_probability))
-        mutate_functions = jax.vmap(get_mutations)(trees, keys)
+        mutate_functions = jax.vmap(get_mutations, in_axes=[0,0,None])(trees, keys, operator_indices)
 
         mutated_trees = jax.vmap(mutate_tree, in_axes=[0,0,0,0,None])(trees, keys, mutate_functions, variable_array, partial_mutate_functions)
 
