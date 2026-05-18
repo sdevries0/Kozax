@@ -369,7 +369,7 @@ def crossover_trees(parent1: Array,
     tuple of (Array, Array)
         Pair of candidates after crossover.
     """
-    _, _, child1, child2, _, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
+    _, _, child1, child2, _, _, _, _, _, _ = jax.lax.while_loop(check_different_trees, safe_crossover, (
         parent1, parent2, jnp.zeros_like(parent1), jnp.zeros_like(parent2), keys, reproduction_probability, jnp.arange(max_nodes), operator_indices, num_ouputs, 0))
     
     return child1, child2
