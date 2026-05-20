@@ -108,6 +108,7 @@ class GeneticProgramming:
                  device_type: str = 'cpu',
                  complexity_objective: bool = False,
                  constant_sd: float = 1.0,
+                 punish_duplicates: bool = True,
                  migration_period: int = 5,
                  migration_size: float = 10,
                  tournament_size: int = 7,
@@ -148,6 +149,7 @@ class GeneticProgramming:
         self.num_generations = num_generations
 
         self.constant_sd = constant_sd
+        self.punish_duplicates = punish_duplicates
 
         assert migration_period > 1, "The migration period should be larger than 1"
         self.migration_period = migration_period
@@ -195,7 +197,7 @@ class GeneticProgramming:
                             self.operator_indices, 
                             self.operator_probabilities, 
                             self.slots, 
-                            self.constant_sd, 
+                            self.constant_sd,
                             self.map_b_to_d)
                 
         self.sample_tree = partial(sample_tree,
@@ -217,6 +219,7 @@ class GeneticProgramming:
                             self.operator_indices, 
                             self.operator_probabilities, 
                             self.slots, 
+                            self.num_ouputs,
                             self.constant_sd)
 
         self.mutate_trees = initialize_mutation_functions(self.mutate_args)
@@ -319,7 +322,7 @@ class GeneticProgramming:
         flat_populations = dummy_population.reshape(self.num_populations * self.population_size, *dummy_population.shape[2:])
         dummy_fitness, dummy_population = self.evaluate_population(dummy_population, data, dummy_key)
 
-        self.jit_simplify_constants(dummy_population)
+        dummy_population = self.jit_simplify_constants(dummy_population)
         
         # Warm up evolve function
         dummy_population = self.evolve_population(dummy_population, dummy_fitness, dummy_key)
@@ -575,7 +578,8 @@ class GeneticProgramming:
         Array
             Evolved populations.
         """
-        populations, fitness = jax.vmap(self.punish_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
+        if self.punish_duplicates:
+            populations, fitness = jax.vmap(self.find_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
         
         if self.complexity_objective:
             complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
@@ -921,7 +925,7 @@ class GeneticProgramming:
 
         return fitness, candidates
 
-    def punish_duplicates(self, population: Array, fitness: Array) -> Tuple[Array, Array]:
+    def find_duplicates(self, population: Array, fitness: Array) -> Tuple[Array, Array]:
         """
         Punishes duplicate candidates by setting their fitness to the maximum fitness.
 
