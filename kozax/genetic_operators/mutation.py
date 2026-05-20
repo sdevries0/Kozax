@@ -561,11 +561,15 @@ def mutate_output_node(tree: Array,
     (sample_tree, max_nodes, max_init_depth, variable_indices, operator_indices, operator_probabilities, slots, num_outputs, coefficient_sd) = args
 
     select_key, sample_key, subtree_key, side_key = jr.split(key, 4)
-    mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=(tree[:, 0]>0))  # Sample node to be mutated
+
+    node_ids = tree[:, 0]
+    is_operator = jnp.isin(node_ids, operator_indices)
+    mutate_idx = jr.choice(select_key, jnp.arange(tree.shape[0]), p=is_operator * 1.0)  # Sample node to be mutated
     node_output_idx = tree[mutate_idx, 4].astype(int)
 
     p = jnp.ones(num_outputs)
     p = p.at[node_output_idx].set(0)
+    p = jax.lax.select(mutate_idx == (max_nodes-1), p.at[0].set(0), p)
     new_node_output_idx = jr.choice(sample_key, jnp.arange(num_outputs), p=p)
 
     new_tree = tree.at[mutate_idx, 4].set(new_node_output_idx)
