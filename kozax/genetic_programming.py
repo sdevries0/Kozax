@@ -125,8 +125,7 @@ class GeneticProgramming:
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
         assert population_size > 0 and population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
-        if constant_optimization:
-            self.optimize_constants_elite = jnp.minimum(optimize_constants_elite, num_populations*population_size)
+        
         self.population_size = population_size
         assert max_init_depth > 0, "The max initial depth should be larger than 0"
         self.max_init_depth = max_init_depth
@@ -254,7 +253,10 @@ class GeneticProgramming:
         
         # Define hyperparameters for constant optimization
         self.constant_step_size = constant_step_size
-        self.optimize_constants_elite = optimize_constants_elite
+        if constant_optimization:
+            self.optimize_constants_elite = min(optimize_constants_elite, num_populations * population_size)
+        else:
+            self.optimize_constants_elite = optimize_constants_elite
         self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
 
@@ -877,28 +879,41 @@ class GeneticProgramming:
 
         states = jax.vmap(self.optimizer.init)(candidates[..., 3:])  # Initialize optimizers for each candidate
 
-        (last_candidates, _, _), out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
-        last_loss = self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data)
-        if self.n_objectives > 1:
-            # For multi-objective, check if ANY objective is nan/inf for each candidate
-            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(last_loss)
-            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        def _sanitize_loss(_loss: Array) -> Array:
+            if self.n_objectives > 1:
+                # For multi-objective, check if ANY objective is nan/inf for each candidate.
+                candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(_loss)
+                nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+            else:
+                nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(_loss)
+            _loss = jnp.where(nan_or_inf, jnp.ones(_loss.shape) * self.max_fitness, _loss)
+            return jnp.minimum(_loss, self.max_fitness * jnp.ones_like(_loss))
+
+        if n_epoch > 0:
+            (last_candidates, _, _), out = jax.lax.scan(
+                self.optimize_constants_epoch,
+                (candidates, states, data),
+                length=n_epoch,
+            )
+            candidate_history, loss_history = out
         else:
-            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(last_loss)
-        last_loss = jnp.where(nan_or_inf, jnp.ones(last_loss.shape) * self.max_fitness, last_loss)
+            # No optimization updates requested; still evaluate once for selection consistency.
+            last_candidates = candidates
+            candidate_history = candidates[None]
+            loss_history = _sanitize_loss(self.vmap_trees(candidates[..., 3:], candidates[..., :3], data))[None]
 
-        new_candidates, loss = out
-
-        loss = jnp.concatenate([loss, last_loss[None]], axis=0)
-        new_candidates = jnp.concatenate([new_candidates, last_candidates[None]], axis=0)
+        # Evaluate final post-update candidates so step N is eligible for selection.
+        last_loss = _sanitize_loss(self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data))
+        loss_history = jnp.concatenate([loss_history, last_loss[None]], axis=0)
+        candidate_history = jnp.concatenate([candidate_history, last_candidates[None]], axis=0)
 
         if self.n_objectives > 1:
-            best_indices = jnp.argmin(loss[:,:,0], axis=0)
+            best_indices = jnp.argmin(loss_history[:, :, 0], axis=0)
         else:
-            best_indices = jnp.argmin(loss, axis=0)
+            best_indices = jnp.argmin(loss_history, axis=0)
 
-        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss, best_indices)  # Get best fitness during constant optimization
-        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(new_candidates, best_indices)  # Get best candidate during constant optimization
+        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss_history, best_indices)  # Get best fitness during constant optimization
+        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(candidate_history, best_indices)  # Get best candidate during constant optimization
 
         return fitness, candidates
 
