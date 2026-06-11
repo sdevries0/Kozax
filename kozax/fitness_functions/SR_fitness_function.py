@@ -23,7 +23,7 @@ class SymbolicRegressionFitnessFunction(BaseFitnessFunction):
     """
 
     def __init__(self):
-        super().__init__()
+        self.n_objectives = 1
 
     def __call__(self, candidate: Array, data: Tuple[Array, Array], tree_evaluator: Callable) -> float:
         """
@@ -45,4 +45,4 @@ class SymbolicRegressionFitnessFunction(BaseFitnessFunction):
         """
         x, y = data
         pred = jax.vmap(tree_evaluator, in_axes=[None, 0])(candidate, x)
-        return jnp.mean(jnp.square(pred - y))
+        return jnp.mean(jnp.square(pred[0] - y))
