@@ -78,8 +78,8 @@ if __name__ == "__main__":
     import optax
 
     strategy = GeneticProgramming(num_generations, population_size, fitness_function, operator_list, variable_list, layer_sizes, num_populations = num_populations,
-                            constant_optimization_method="gradient", constant_optimization_steps = 10, optimizer_class = optax.adam,
-                            optimize_constants_elite=100, constant_step_size_init=0.025)
+                        constant_optimization=True, constant_optimization_steps = 10,
+                        optimize_constants_elite=100, constant_step_size=0.05)
     """
     Kozax provides a fit function that receives the data and a random key. However, it is also possible to run Kozax with an easy loop consisting of evaluating and evolving. 
     This is useful as different input data can be provided during evaluation. In symbolic regression of dynamical systems, it helps to first optimize on a small part of the time points, 

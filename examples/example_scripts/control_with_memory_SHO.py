@@ -53,7 +53,8 @@ observations and the latent memory is mapped to a control signal. Afterwards, th
 the fitness is computed given the control and environment state.
 """
 
-class Evaluator:
+from kozax.fitness_functions.base_fitness_function import BaseFitnessFunction
+class Evaluator(BaseFitnessFunction):
     def __init__(self, env, state_size: int, dt0: float, solver=diffrax.Euler(), max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
         """Evaluates dynamic symbolic policies in control tasks.
 
@@ -77,6 +78,7 @@ class Evaluator:
             max_steps: The maximum number of steps that can be used in integration.
             stepsize_controller: Controller for the stepsize during integration.
         """
+        super().__init__()
         self.env = env
         self.max_fitness = 1e4
         self.state_size = state_size

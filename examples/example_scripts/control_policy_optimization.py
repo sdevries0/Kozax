@@ -71,10 +71,11 @@ if __name__ == "__main__":
     for t in range(T):
 
         y0, y1, y2 = obs
-        action = 2.92*y0*(-6.56*y1 - 1.29*y2)
+        action = -1.67*y0*y1 - 2.18*y0*y2 - 4.37*y1
         obs, env_state, reward, done, _ = env.step(
                     jr.fold_in(key, t), env_state, action, env_params
                 )
+        
         all_obs.append(obs)
         treward.append(reward)
         actions.append(action)
@@ -83,4 +84,3 @@ if __name__ == "__main__":
     plt.plot(all_obs[:,0], label='cos(x)')
     plt.plot(all_obs[:,1], label='sin(x)')
     plt.legend()
-    plt.show()

@@ -23,7 +23,8 @@ We define a fitness function class that includes the network initialization, tra
 At every epoch, a new batch of data is sampled, and the fitness is computed as the accuracy of the trained network on a validation set.
 """
 
-class FitnessFunction:
+from kozax.fitness_functions.base_fitness_function import BaseFitnessFunction
+class FitnessFunction(BaseFitnessFunction):
     """
     A class to define the fitness function for evaluating candidate loss functions.
     The fitness is computed as the accuracy of a neural network trained with the candidate loss function
@@ -38,6 +39,7 @@ class FitnessFunction:
         optim (optax.GradientTransformation): Optax optimizer instance.
     """
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, epochs: int, learning_rate: float):
+        super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim

@@ -41,7 +41,8 @@ dynamic memory and the dynamic environment. At every time step, the state of the
 the state equation of the memory and environment state is computed. When the simulation is done, the fitness is computed given the control and environment state.
 """
 
-class Evaluator:
+from kozax.fitness_functions.base_fitness_function import BaseFitnessFunction
+class Evaluator(BaseFitnessFunction):
     def __init__(self, env, state_size: int, dt0: float, solver=diffrax.Euler(), max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
         """Evaluates dynamic symbolic policies in control tasks.
 
@@ -65,7 +66,7 @@ class Evaluator:
             max_steps: The maximum number of steps that can be used in integration.
             stepsize_controller: Controller for the stepsize during integration.
         """
-        self.env = env
+        super().__init__()
         self.max_fitness = 1e4
         self.state_size = state_size
         self.obs_size = env.n_obs
