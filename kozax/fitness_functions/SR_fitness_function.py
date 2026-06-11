@@ -45,4 +45,4 @@ class SymbolicRegressionFitnessFunction(BaseFitnessFunction):
         """
         x, y = data
         pred = jax.vmap(tree_evaluator, in_axes=[None, 0])(candidate, x)
-        return jnp.mean(jnp.square(pred[0] - y))
+        return jnp.mean(jnp.square(pred[:,0] - y))
