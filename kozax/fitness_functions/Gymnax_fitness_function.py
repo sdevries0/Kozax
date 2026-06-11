@@ -41,7 +41,7 @@ class GymFitnessFunction(BaseFitnessFunction):
     """
 
     def __init__(self, env_name: str) -> None:
-        super.__init__()
+        super().__init__()
         self.env, self.env_params = gymnax.make(env_name)
         self.num_steps = self.env_params.max_steps_in_episode
 

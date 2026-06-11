@@ -84,6 +84,10 @@ class GeneticProgramming:
         Value of the step size for the optimizer.
     max_fitness : float, optional
         Maximum fitness value.
+    max_pareto_size : int, optional
+        Maximum number of solutions retained in the Pareto front.
+    pareto_preprune_factor : int, optional
+        Multiplier used to bound candidate pool size before non-dominated sorting.
     reproduction_probability_factors : Tuple[float], optional
         The reproduction probability for each subpopulation.
     crossover_probability_factors : Tuple[float], optional
@@ -116,6 +120,8 @@ class GeneticProgramming:
                  optimizer_class = optax.adam,
                  constant_step_size: float = 0.1,
                  max_fitness: float = 1e8,
+                 max_pareto_size: int | None = None,
+                 pareto_preprune_factor: int = 4,
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
@@ -125,8 +131,7 @@ class GeneticProgramming:
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
         assert population_size > 0 and population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
-        if constant_optimization:
-            self.optimize_constants_elite = jnp.minimum(optimize_constants_elite, num_populations*population_size)
+        
         self.population_size = population_size
         assert max_init_depth > 0, "The max initial depth should be larger than 0"
         self.max_init_depth = max_init_depth
@@ -175,6 +180,12 @@ class GeneticProgramming:
         self.reproduction_probabilities = jnp.linspace(*reproduction_probability_factors, self.num_populations)
 
         self.max_fitness = max_fitness
+        if max_pareto_size is None:
+            max_pareto_size = max(2 * self.population_size, 256)
+        assert max_pareto_size > 0, "The maximum pareto size should be larger than 0"
+        assert pareto_preprune_factor >= 1, "The pareto preprune factor should be at least 1"
+        self.max_pareto_size = max_pareto_size
+        self.pareto_preprune_size = self.max_pareto_size * pareto_preprune_factor
         self.complexities = jnp.arange(self.num_trees * self.max_nodes)
 
         # Create a mapping from indices in breadth first space to depth first space
@@ -254,7 +265,10 @@ class GeneticProgramming:
         
         # Define hyperparameters for constant optimization
         self.constant_step_size = constant_step_size
-        self.optimize_constants_elite = optimize_constants_elite
+        if constant_optimization:
+            self.optimize_constants_elite = min(optimize_constants_elite, num_populations * population_size)
+        else:
+            self.optimize_constants_elite = optimize_constants_elite
         self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
 
@@ -877,28 +891,41 @@ class GeneticProgramming:
 
         states = jax.vmap(self.optimizer.init)(candidates[..., 3:])  # Initialize optimizers for each candidate
 
-        (last_candidates, _, _), out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
-        last_loss = self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data)
-        if self.n_objectives > 1:
-            # For multi-objective, check if ANY objective is nan/inf for each candidate
-            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(last_loss)
-            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        def _sanitize_loss(_loss: Array) -> Array:
+            if self.n_objectives > 1:
+                # For multi-objective, check if ANY objective is nan/inf for each candidate.
+                candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(_loss)
+                nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+            else:
+                nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(_loss)
+            _loss = jnp.where(nan_or_inf, jnp.ones(_loss.shape) * self.max_fitness, _loss)
+            return jnp.minimum(_loss, self.max_fitness * jnp.ones_like(_loss))
+
+        if n_epoch > 0:
+            (last_candidates, _, _), out = jax.lax.scan(
+                self.optimize_constants_epoch,
+                (candidates, states, data),
+                length=n_epoch,
+            )
+            candidate_history, loss_history = out
         else:
-            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(last_loss)
-        last_loss = jnp.where(nan_or_inf, jnp.ones(last_loss.shape) * self.max_fitness, last_loss)
+            # No optimization updates requested; still evaluate once for selection consistency.
+            last_candidates = candidates
+            candidate_history = candidates[None]
+            loss_history = _sanitize_loss(self.vmap_trees(candidates[..., 3:], candidates[..., :3], data))[None]
 
-        new_candidates, loss = out
-
-        loss = jnp.concatenate([loss, last_loss[None]], axis=0)
-        new_candidates = jnp.concatenate([new_candidates, last_candidates[None]], axis=0)
+        # Evaluate final post-update candidates so step N is eligible for selection.
+        last_loss = _sanitize_loss(self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data))
+        loss_history = jnp.concatenate([loss_history, last_loss[None]], axis=0)
+        candidate_history = jnp.concatenate([candidate_history, last_candidates[None]], axis=0)
 
         if self.n_objectives > 1:
-            best_indices = jnp.argmin(loss[:,:,0], axis=0)
+            best_indices = jnp.argmin(loss_history[:, :, 0], axis=0)
         else:
-            best_indices = jnp.argmin(loss, axis=0)
+            best_indices = jnp.argmin(loss_history, axis=0)
 
-        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss, best_indices)  # Get best fitness during constant optimization
-        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(new_candidates, best_indices)  # Get best candidate during constant optimization
+        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss_history, best_indices)  # Get best fitness during constant optimization
+        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(candidate_history, best_indices)  # Get best candidate during constant optimization
 
         return fitness, candidates
 
@@ -939,8 +966,8 @@ class GeneticProgramming:
 
         try:
             _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
-        except:
-            raise("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.")
+        except Exception as exc:
+            raise ValueError("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.") from exc
 
         _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
 
@@ -953,6 +980,28 @@ class GeneticProgramming:
             metrics = jnp.concatenate([_fitness, complexity], axis=-1)
         else:
             metrics = _fitness
+
+        # Pre-prune before O(n^2) non-dominated sorting to keep memory bounded.
+        if metrics.shape[0] > self.pareto_preprune_size:
+            sort_keys = [metrics[:, -obj_idx - 1] for obj_idx in range(metrics.shape[1])]
+            preprune_indices = jnp.lexsort(sort_keys)[:self.pareto_preprune_size]
+            metrics = metrics[preprune_indices]
+            _fitness = _fitness[preprune_indices]
+            _population = _population[preprune_indices]
+
+        # Remove exact duplicate metric rows without jnp.unique by sorting + adjacent compare.
+        sort_keys = [metrics[:, -obj_idx - 1] for obj_idx in range(metrics.shape[1])]
+        sorted_indices = jnp.lexsort(sort_keys)
+        metrics = metrics[sorted_indices]
+        _fitness = _fitness[sorted_indices]
+        _population = _population[sorted_indices]
+
+        if metrics.shape[0] > 1:
+            duplicate_metrics = jnp.all(metrics[1:] == metrics[:-1], axis=1)
+            keep_mask = jnp.concatenate([jnp.array([True]), ~duplicate_metrics], axis=0)
+            metrics = metrics[keep_mask]
+            _fitness = _fitness[keep_mask]
+            _population = _population[keep_mask]
 
         # For each solution i, check if it's dominated by any other solution j
         
@@ -978,16 +1027,20 @@ class GeneticProgramming:
         # A solution is non-dominated if it's not dominated by any other solution
         non_dominated = ~jnp.any(j_dominates_i, axis=1)
 
-
-        # _pareto_front = jnp.where(non_dominated[:,None,None,None], padded_population, jnp.zeros_like(padded_population))
-        # _pareto_fitness = jnp.where(non_dominated[:,None], padded_fitness, self.max_fitness * jnp.ones_like(padded_fitness))
-
-        # _, unique_indices = jnp.unique(_pareto_front, return_index=True, axis=0)
-
-        # unique_indices = unique_indices[jnp.all(_pareto_fitness[unique_indices] != self.max_fitness, axis=-1)]
-
         _pareto_front = _population[non_dominated]
         _pareto_fitness = _fitness[non_dominated]
+
+        # Hard cap to prevent unbounded front growth in long runs.
+        if _pareto_fitness.shape[0] > self.max_pareto_size:
+            if (self.n_objectives == 1) or self.complexity_objective:
+                complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_pareto_front)[:,None]
+                cap_metrics = jnp.concatenate([_pareto_fitness, complexity], axis=-1)
+            else:
+                cap_metrics = _pareto_fitness
+            cap_sort_keys = [cap_metrics[:, -obj_idx - 1] for obj_idx in range(cap_metrics.shape[1])]
+            cap_indices = jnp.lexsort(cap_sort_keys)[:self.max_pareto_size]
+            _pareto_fitness = _pareto_fitness[cap_indices]
+            _pareto_front = _pareto_front[cap_indices]
 
         if self.n_objectives==1:
             _pareto_fitness = _pareto_fitness[:,0]
