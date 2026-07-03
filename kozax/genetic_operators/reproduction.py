@@ -358,7 +358,8 @@ def evolve_populations(jit_evolve_population: Callable,
                        migration_period: int, 
                        migration_size: int, 
                        reproduction_type_probabilities: Array, 
-                       reproduction_probabilities: Array) -> Array:
+                       reproduction_probabilities: Array,
+                       population_indices: Array) -> Array:
     """Evolves each population independently.
 
     Parameters
@@ -388,7 +389,6 @@ def evolve_populations(jit_evolve_population: Callable,
         Evolved populations.
     """
     num_populations, population_size, _, _, _ = populations.shape
-    population_indices = jnp.arange(population_size)
 
     nsga_ranks, crowding_distances = jax.vmap(nsga2, out_axes=(0, 0))(metrics)
 
