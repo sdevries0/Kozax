@@ -134,7 +134,7 @@ class GeneticProgramming:
         
         self.population_size = population_size
         assert max_init_depth > 0, "The max initial depth should be larger than 0"
-        self.max_init_depth = max_init_depth
+        self.max_init_depth = jnp.minimum(max_init_depth, 10)
         assert max_nodes > 0, "The max number of nodes should be larger than 0"
         self.max_nodes = max_nodes
         self.num_trees = jnp.sum(self.layer_sizes).item()
