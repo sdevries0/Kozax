@@ -61,9 +61,9 @@ if __name__ == "__main__":
 
     #Define the nodes and hyperparameters
     operator_list = [
-            ("+", lambda x, y: jnp.add(x, y), 2, 0.5), 
-            ("*", lambda x, y: jnp.multiply(x, y), 2, 0.5), 
-        ]
+        {"string": "+", "fn": lambda x, y: jnp.add(x, y), "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "*", "fn": lambda x, y: jnp.multiply(x, y), "arity": 2, "prob": 0.5, "flops": 1}
+    ]
 
     variable_list = [["x" + str(i) for i in range(env.n_var)]]
     layer_sizes = jnp.array([env.n_var])

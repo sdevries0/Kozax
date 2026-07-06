@@ -384,9 +384,9 @@ class GeneticProgramming:
         node_function_list = [lambda x, y, _data: 0.0, lambda x, y, _data: 0.0]
 
         if operator_list is None:
-            operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.1), 
-                             ("-", lambda x, y: jnp.subtract(x, y), 2, 0.1),
-                             ("*", lambda x, y: jnp.multiply(x, y), 2, 0.1),
+            operator_list = [{"string": "+", "fn": lambda x, y: jnp.add(x, y), "arity": 2, "prob": 0.1}, 
+                             {"string": "-", "fn": lambda x, y: jnp.subtract(x, y), "arity": 2, "prob": 0.1},
+                             {"string": "*", "fn": lambda x, y: jnp.multiply(x, y), "arity": 2, "prob": 0.1},
                              ]
             
         if variable_list is None:
@@ -394,19 +394,18 @@ class GeneticProgramming:
             variable_list = [["x" + str(i) for i in range(self.layer_sizes[0])]]
 
         n_operands = [0, 0] #Add 0 for empty node and constant node
+        flop_list = [0.0, 0.0] # 0.0 FLOPs for empty node, 0.0 FLOPs for constant node
         index = 2
         operator_probabilities = jnp.zeros(len(operator_list))
 
         assert len(operator_list) > 0, "No operators were given"
 
-        for operator_tuple in operator_list:
-            string = operator_tuple[0]
-            f = operator_tuple[1] #Executable function
-            arity = operator_tuple[2] #Number of children
-            if len(operator_tuple) == 4:
-                probability = operator_tuple[3] #Probability of function to be sampled
-            else:
-                probability = 0.1
+        for operator_dict in operator_list:
+            string = operator_dict["string"]
+            f = operator_dict["fn"]
+            arity = operator_dict["arity"]
+            probability = operator_dict.get("prob", 0.1)
+            flops = operator_dict.get("flops", 1.0)
 
             if string not in string_to_node:
                 string_to_node[string] = index
@@ -418,6 +417,7 @@ class GeneticProgramming:
                     node_function_list.append(lambda_operator_arity2(f))
                     n_operands.append(2)
                 operator_probabilities = operator_probabilities.at[index - 2].set(probability)
+                flop_list.append(flops)
                 index += 1
 
         self.operator_probabilities = operator_probabilities
@@ -442,6 +442,7 @@ class GeneticProgramming:
                         node_to_string[index] = var
                         node_function_list.append(lambda_leaf(data_index))
                         n_operands.append(0) #Leaf nodes have no children
+                        flop_list.append(0.0) # Variables have 0 FLOPs
                         index += 1
                         data_index += 1
                     except:
@@ -473,6 +474,7 @@ class GeneticProgramming:
         self.node_to_string = node_to_string
         self.node_function_list = node_function_list
         self.variable_array = variable_array
+        self.operator_flops = jnp.array(flop_list)
 
     def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None) -> None:
         """
@@ -576,7 +578,7 @@ class GeneticProgramming:
         populations, fitness = jax.vmap(self.punish_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
         
         if self.complexity_objective:
-            complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
+            complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(self.operator_flops[candidate[:,:,0].astype(int)]))(population))(populations)
             complexities = jnp.maximum(complexities, 5*self.num_trees*jnp.ones_like(complexities))
             fitness = jnp.concatenate([fitness, complexities[:,:,None]], axis=-1)
 
@@ -976,7 +978,7 @@ class GeneticProgramming:
 
         # Compute complexity of the current population
         if (self.n_objectives == 1) or self.complexity_objective:
-            complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_population)[:,None]
+            complexity = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:, :, 0].astype(int)]))(_population)[:,None]
             metrics = jnp.concatenate([_fitness, complexity], axis=-1)
         else:
             metrics = _fitness
@@ -1033,7 +1035,7 @@ class GeneticProgramming:
         # Hard cap to prevent unbounded front growth in long runs.
         if _pareto_fitness.shape[0] > self.max_pareto_size:
             if (self.n_objectives == 1) or self.complexity_objective:
-                complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_pareto_front)[:,None]
+                complexity = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:, :, 0].astype(int)]))(_pareto_front)[:,None]
                 cap_metrics = jnp.concatenate([_pareto_fitness, complexity], axis=-1)
             else:
                 cap_metrics = _pareto_fitness
@@ -1160,7 +1162,7 @@ class GeneticProgramming:
         pareto_solutions = pareto_solutions[valid_mask]
 
         # Calculate complexities
-        complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
+        complexities = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:,:,0].astype(int)]))(pareto_solutions)
 
         # Sort by complexity first
         sorted_indices = jnp.argsort(complexities)
@@ -1292,7 +1294,7 @@ class GeneticProgramming:
         pareto_fitness = pareto_fitness[valid_mask]
         pareto_solutions = pareto_solutions[valid_mask]
 
-        complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
+        complexities = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:, :, 0].astype(int)]))(pareto_solutions)
 
         sorted_indices = jnp.argsort(complexities)
         pareto_fitness = pareto_fitness[sorted_indices]

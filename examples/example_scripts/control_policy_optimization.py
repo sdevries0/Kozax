@@ -31,9 +31,9 @@ if __name__ == "__main__":
 
     #Define operators and variables
     operator_list = [
-        ("+", lambda x, y: jnp.add(x, y), 2, 0.5), 
-        ("-", lambda x, y: jnp.subtract(x, y), 2, 0.1), 
-        ("*", lambda x, y: jnp.multiply(x, y), 2, 0.5), 
+        {"string": "+", "fn": lambda x, y: jnp.add(x, y), "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "-", "fn": lambda x, y: jnp.subtract(x, y), "arity": 2, "prob": 0.1, "flops": 1},
+        {"string": "*", "fn": lambda x, y: jnp.multiply(x, y), "arity": 2, "prob": 0.5, "flops": 1}
         ]
 
     variable_list = [[f"y{i}" for i in range(fitness_function.env.observation_space(fitness_function.env_params).shape[0])]]
