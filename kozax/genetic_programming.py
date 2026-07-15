@@ -110,7 +110,7 @@ class GeneticProgramming:
                  max_nodes: int = 15,
                  device_type: str = 'cpu',
                  complexity_objective: bool = False,
-                 constant_sd: float = 1.0,
+                 constant_sd: float | Array = 1.0,
                  migration_period: int = 5,
                  migration_size: float = 10,
                  tournament_size: int = 7,
@@ -150,7 +150,21 @@ class GeneticProgramming:
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
 
-        self.constant_sd = constant_sd
+        if isinstance(constant_sd, float) or isinstance(constant_sd, int):
+            self.constant_sd_array = constant_sd * jnp.ones(jnp.sum(layer_sizes))
+        else:
+            assert isinstance(constant_sd, jnp.ndarray)
+            if len(constant_sd)>1:
+                assert len(constant_sd) == len(layer_sizes), "Either select on value for the constant standard deviation, or provide one value for each type of tree (len(layer_sizes))"
+                constant_sd_array = jnp.zeros(jnp.sum(layer_sizes))
+                counter = 0
+                for i in range(constant_sd.shape[0]):
+                    constant_sd_array = constant_sd_array.at[counter: counter+layer_sizes[i]].set(constant_sd[i])
+                    counter += layer_sizes[i]
+            else:
+                constant_sd_array = constant_sd * jnp.ones(jnp.sum(layer_sizes))
+
+            self.constant_sd_array = constant_sd_array
 
         assert migration_period > 1, "The migration period should be larger than 1"
         self.migration_period = migration_period
@@ -204,7 +218,6 @@ class GeneticProgramming:
                             self.operator_indices, 
                             self.operator_probabilities, 
                             self.slots, 
-                            self.constant_sd, 
                             self.map_b_to_d)
                 
         self.sample_tree = partial(sample_tree,
@@ -216,6 +229,7 @@ class GeneticProgramming:
                                          num_trees=self.num_trees, 
                                          max_init_depth=self.max_init_depth, 
                                          variable_array=self.variable_array,
+                                         constant_sd_array=self.constant_sd_array,
                                          sample_function=self.sample_tree)
 
         self.mutate_args = (self.sample_tree, 
@@ -224,8 +238,7 @@ class GeneticProgramming:
                             self.variable_indices, 
                             self.operator_indices, 
                             self.operator_probabilities, 
-                            self.slots, 
-                            self.constant_sd)
+                            self.slots)
 
         self.mutate_trees = initialize_mutation_functions(self.mutate_args)
 
@@ -454,7 +467,7 @@ class GeneticProgramming:
         counter = 0
         for layer_i, var_list in enumerate(variable_list):
             p = jnp.zeros((data_index + 1))
-            if self.constant_sd > 0.0:
+            if self.constant_sd_array[layer_i] > 0.0:
                 p = p.at[0].set(0.1)
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
@@ -615,7 +628,7 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Pair of candidates after mutation.
         """
-        offspring = jax.vmap(self.mutate_trees, in_axes=[0,1,None,None])(jnp.stack([parent1, parent2]), keys, reproduction_probability, self.variable_array)
+        offspring = jax.vmap(self.mutate_trees, in_axes=[0,1,None,None,None])(jnp.stack([parent1, parent2]), keys, reproduction_probability, self.variable_array, self.constant_sd_array)
         return offspring[0], offspring[1]
 
     def sample_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
@@ -638,7 +651,7 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Pair of candidates.
         """
-        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0])(_keys, self.max_init_depth, self.variable_array), in_axes=[1])(keys)
+        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0, 0])(_keys, self.max_init_depth, self.variable_array, self.constant_sd_array), in_axes=[1])(keys)
         return offspring[0], offspring[1]
 
     def simplify_constants_in_row(self, i: int, carry: Tuple[Array, Array, Array]) -> Tuple[Array, Array, Array]:

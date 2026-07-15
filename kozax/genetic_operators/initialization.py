@@ -30,13 +30,13 @@ def sample_node(i: int,
     Tuple[PRNGKey, Array, int, int, int, Array, Tuple]
         Updated tuple with the random key, tree, open slots, max init depth, max nodes, variable array, and other arguments.
     """
-    key, tree, open_slots, max_init_depth, max_nodes, variable_array, args = carry
-    variable_indices, operator_indices, operator_probabilities, slots, coefficient_sd, map_b_to_d = args
+    key, tree, open_slots, max_init_depth, max_nodes, variable_array, constant_sd, args = carry
+    variable_indices, operator_indices, operator_probabilities, slots, map_b_to_d = args
     coefficient_key, leaf_key, variable_key, node_key, operator_key = jr.split(key, 5)
     _i = map_b_to_d[i].astype(int)  # Get depth first index
 
     depth = (jnp.log(i + 1 + 1e-10) / jnp.log(2)).astype(int)  # Compute depth of node
-    coefficient = jr.normal(coefficient_key) * coefficient_sd
+    coefficient = jr.normal(coefficient_key) * constant_sd
     leaf = jr.choice(variable_key, variable_indices, shape=(), p=variable_array)  # Sample coefficient or variable
 
     index = jax.lax.select((open_slots < max_nodes - i - 1) & (depth + 1 < max_init_depth),  # Check if max depth has been reached, or if the number of open slots reached the max number of nodes
@@ -59,7 +59,7 @@ def sample_node(i: int,
 
     open_slots = jax.lax.select(index == 0, open_slots, jnp.maximum(0, open_slots + slots[index] - 1))  # Update the number of open slots
 
-    return (jr.fold_in(key, i), tree, open_slots, max_init_depth, max_nodes, variable_array, args)
+    return (jr.fold_in(key, i), tree, open_slots, max_init_depth, max_nodes, variable_array, constant_sd, args)
 
 def prune_row(i: int, 
               carry: Tuple[Array, int, int], 
@@ -116,6 +116,7 @@ def prune_tree(tree: Array,
 def sample_tree(key: PRNGKey, 
                 depth: int, 
                 variable_array: Array, 
+                constant_sd: float,
                 tree_size: int, 
                 max_nodes: int, 
                 args: Tuple) -> Array:
@@ -142,7 +143,7 @@ def sample_tree(key: PRNGKey,
         Initialized tree.
     """
     # First sample tree at full size given depth
-    tree = jax.lax.fori_loop(0, tree_size, sample_node, (key, jnp.zeros((tree_size, 4)), 1, depth, max_nodes, variable_array, args))[1]  # Sample nodes in a tree sequentially
+    tree = jax.lax.fori_loop(0, tree_size, sample_node, (key, jnp.zeros((tree_size, 4)), 1, depth, max_nodes, variable_array, constant_sd, args))[1]  # Sample nodes in a tree sequentially
 
     # Prune empty rows in tree
     pruned_tree = prune_tree(tree, tree_size, max_nodes)
@@ -153,6 +154,7 @@ def sample_population(key: PRNGKey,
                       num_trees: int, 
                       max_init_depth: int, 
                       variable_array: Array,
+                      constant_sd_array: Array,
                       sample_function: Callable) -> Array:
     """Initializes a population of candidates.
 
@@ -176,5 +178,5 @@ def sample_population(key: PRNGKey,
     Array
         Population of candidates.
     """
-    sample_candidate = lambda keys: jax.vmap(sample_function, in_axes=[0, None, 0])(keys, max_init_depth, variable_array)
+    sample_candidate = lambda keys: jax.vmap(sample_function, in_axes=[0, None, 0, 0])(keys, max_init_depth, variable_array, constant_sd_array)
     return jax.vmap(sample_candidate)(jr.split(key, (population_size, num_trees)))
