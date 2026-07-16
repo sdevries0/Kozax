@@ -948,7 +948,7 @@ class GeneticProgramming:
             Optimized and evaluated candidate.
         """
 
-        states = jax.vmap(self.optimizer.init)(candidates[..., 3:])  # Initialize optimizers on the selected parameter slice.
+        states = jax.vmap(self.optimizer.init)(candidates[..., -1:])  # Initialize optimizers on the selected parameter slice.
 
         def _sanitize_loss(_loss: Array) -> Array:
             if self.n_objectives > 1:
