@@ -165,11 +165,19 @@ def sample_tree(key: PRNGKey,
         (key, jnp.tile(empty_row, (tree_size, 1)), 1, depth, max_nodes, max_arity, variable_array, constant_sd, args),
     )[1]  # Sample nodes in a tree sequentially
 
-    # Prune empty rows in tree
-    # print(tree)
-    pruned_tree = prune_tree(tree, tree_size, max_nodes)
-    # print(pruned_tree)
-    return pruned_tree
+    # If there are no variables available for this tree (constant-only),
+    # return a single-node constant tree instead of the sampled tree.
+    is_constant = (jnp.sum(variable_array>0)==1) & (variable_array[0] > 0)
+
+    # Build a single-node constant old_tree and prune it to the expected layout
+    const_key, _ = jr.split(key, 2)
+    const_coeff = jr.normal(const_key) * constant_sd
+    const_row = empty_row.at[0].set(1.0).at[-1].set(const_coeff)
+    const_old_tree = jnp.tile(empty_row, (tree_size, 1)).at[0].set(const_row)
+
+    tree = jnp.where(is_constant, const_old_tree, tree)
+
+    return prune_tree(tree, tree_size, max_nodes)
 
 def sample_population(key: PRNGKey, 
                       population_size: int, 

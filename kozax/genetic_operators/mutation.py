@@ -72,6 +72,35 @@ def sample_leaf_node(carry: Tuple[Array, PRNGKey, int, int, Array, Array]) -> Tu
     new_leaf = jr.choice(variable_key, variable_indices, shape=(), p=variable_array)
     return (tree, key, mutate_idx, new_leaf, variable_array, variable_indices)
 
+
+def _place_branches(child: Array,
+                    sources: Array,
+                    branch_roots: Array,
+                    branch_sizes: Array,
+                    use_branch: Array,
+                    shifts: Array,
+                    tree_indices: Array) -> Array:
+    """Place multiple branches into `child` using precomputed shifts and masks.
+
+    sources: shape (n_branches, max_nodes, cols)
+    shifts: integer shifts per branch
+    branch_roots, branch_sizes, use_branch: per-branch arrays
+    """
+    n_branches = sources.shape[0]
+
+    def place(i, current_child):
+        source = sources[i]
+        size = branch_sizes[i]
+        b_root = branch_roots[i]
+        shift = shifts[i]
+
+        rolled = jnp.roll(source, shift, axis=0)
+        rolled = rolled.at[:, 1:-1].set(jnp.where(rolled[:, 1:-1] > -1, rolled[:, 1:-1] + shift, -1))
+        mask = (tree_indices <= b_root) & (tree_indices > b_root - size)
+        return jax.lax.select(use_branch[i], jnp.where(mask, rolled, current_child), current_child)
+
+    return jax.lax.fori_loop(0, n_branches, place, child)
+
 def check_equal_leaves(carry: Tuple[Array, PRNGKey, int, int, Array, Array]) -> bool:
     """Checks that the old and new leaf node are different.
 
@@ -225,6 +254,8 @@ def mutate_leaf(tree: Array,
     child = jax.lax.select(new_leaf == 1, child.at[mutate_idx, -1].set(coefficient), child.at[mutate_idx, -1].set(0))
     return child
 
+# Unified branch placement helper is implemented in `_place_branches` above.
+
 def replace_with_subtrees(tree: Array,
                           key: PRNGKey,
                           mutate_idx: int,
@@ -278,19 +309,8 @@ def replace_with_subtrees(tree: Array,
     child = child.at[mutate_idx, 1:-1].set(-1)
     child = child.at[mutate_idx, 1:-1].set(branch_roots)
 
-    def place_branch(i, carry):
-        current_child = carry
-        size = branch_sizes[i]
-        root_idx = branch_roots[i]
-        branch = sampled_subtrees[i]
-        shift = root_idx - (max_nodes - 1)
-
-        rolled = jnp.roll(branch, shift, axis=0)
-        rolled = rolled.at[:, 1:-1].set(jnp.where(rolled[:, 1:-1] > -1, rolled[:, 1:-1] + shift, -1))
-        mask = (tree_indices <= root_idx) & (tree_indices > root_idx - size)
-        return jax.lax.select(use_branch[i], jnp.where(mask, rolled, current_child), current_child)
-
-    child = jax.lax.fori_loop(0, max_arity, place_branch, child)
+    shifts = (branch_roots - (max_nodes - 1)).astype(jnp.int32)
+    child = _place_branches(child, sampled_subtrees, branch_roots, branch_sizes, use_branch, shifts, tree_indices)
 
     return child
 
@@ -487,18 +507,8 @@ def prepend_operator(tree: Array,
     empty_row = -jnp.ones(tree.shape[1]).at[0].set(0.0).at[-1].set(0.0)
     child = jnp.tile(empty_row, (max_nodes, 1))
 
-    def place_branch(i, carry):
-        current_child = carry
-        size = branch_sizes[i]
-        b_root = branch_roots[i]
-        source = jax.lax.select(is_old_branch[i], tree, sampled_subtrees[i])
-        shift = b_root - (max_nodes - 1)
-        rolled = jnp.roll(source, shift, axis=0)
-        rolled = rolled.at[:, 1:-1].set(jnp.where(rolled[:, 1:-1] > -1, rolled[:, 1:-1] + shift, -1))
-        mask = (tree_indices <= b_root) & (tree_indices > b_root - size)
-        return jax.lax.select(use_branch[i], jnp.where(mask, rolled, current_child), current_child)
-
-    child = jax.lax.fori_loop(0, max_arity, place_branch, child)
+    shifts = (branch_roots - (max_nodes - 1)).astype(jnp.int32)
+    child = _place_branches(child, jnp.where(is_old_branch[:, None, None], tree[None, ...], sampled_subtrees), branch_roots, branch_sizes, use_branch, shifts, tree_indices)
 
     child = child.at[root_idx, 0].set(new_operator)
     child = child.at[root_idx, 1:-1].set(branch_roots)
@@ -583,25 +593,9 @@ def insert_operator(tree: Array,
         )
     )
 
-    # Insert branches under new operator.
-    def place_branch(i, carry):
-        current_child = carry
-        size = branch_sizes[i]
-        b_root = branch_roots[i]
-        source = jax.lax.select(is_old_branch[i], old_subtree, sampled_subtrees[i])
-
-        # Old subtree rows are currently aligned to their original root at mutate_idx,
-        # while sampled subtrees are aligned to max_nodes-1.
-        shift_old = b_root - mutate_idx
-        shift_sampled = b_root - (max_nodes - 1)
-        shift = jax.lax.select(is_old_branch[i], shift_old, shift_sampled)
-
-        rolled = jnp.roll(source, shift, axis=0)
-        rolled = rolled.at[:, 1:-1].set(jnp.where(rolled[:, 1:-1] > -1, rolled[:, 1:-1] + shift, -1))
-        mask = (tree_indices <= b_root) & (tree_indices > b_root - size)
-        return jax.lax.select(use_branch[i], jnp.where(mask, rolled, current_child), current_child)
-
-    child = jax.lax.fori_loop(0, max_arity, place_branch, child)
+    shifts = jnp.where(is_old_branch, branch_roots - mutate_idx, branch_roots - (max_nodes - 1)).astype(jnp.int32)
+    sources = jnp.where(is_old_branch[:, None, None], old_subtree[None, ...], sampled_subtrees)
+    child = _place_branches(child, sources, branch_roots, branch_sizes, use_branch, shifts, tree_indices)
 
     child = child.at[mutate_idx, 0].set(new_operator)
     child = child.at[mutate_idx, 1:-1].set(branch_roots)

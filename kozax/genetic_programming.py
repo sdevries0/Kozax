@@ -119,6 +119,7 @@ class GeneticProgramming:
                  max_fitness: float = 1e8,
                  max_pareto_size: int | None = None,
                  pareto_preprune_factor: int = 4,
+                 punish_duplicates: bool = True,
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
@@ -198,6 +199,7 @@ class GeneticProgramming:
         self.max_pareto_size = max_pareto_size
         self.pareto_preprune_size = self.max_pareto_size * pareto_preprune_factor
         self.complexities = jnp.arange(self.num_trees * self.max_nodes)
+        self.punish_duplicates = punish_duplicates
 
         self.initialize_node_library(operator_list, variable_list)
 
@@ -609,7 +611,8 @@ class GeneticProgramming:
         Array
             Evolved populations.
         """
-        populations, fitness = jax.vmap(self.punish_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
+        if self.punish_duplicates:
+            populations, fitness = jax.vmap(self.find_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
         
         if self.complexity_objective:
             complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(self.operator_flops[candidate[:,:,0].astype(int)]))(population))(populations)
@@ -1003,7 +1006,7 @@ class GeneticProgramming:
 
         return fitness, candidates
 
-    def punish_duplicates(self, population: Array, fitness: Array) -> Tuple[Array, Array]:
+    def find_duplicates(self, population: Array, fitness: Array) -> Tuple[Array, Array]:
         """
         Punishes duplicate candidates by setting their fitness to the maximum fitness.
 

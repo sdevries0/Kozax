@@ -304,7 +304,8 @@ def _assert_tree_reference_invariants(tree):
     assert jnp.all(ordering_ok)
 
 def test_mutate_trees_jit_and_invariants_hold():
-    strategy = _make_strategy(population_size=6)
+    fitness = SimpleRegressionFitness()
+    strategy = _make_strategy(fitness, num_generations=2, num_populations=1, population_size=100)
     key = jr.PRNGKey(10)
     init_key, mutate_key = jr.split(key)
 
