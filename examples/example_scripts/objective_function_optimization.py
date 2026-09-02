@@ -195,11 +195,12 @@ if __name__ == "__main__":
     num_populations = 5
     num_generations = 15
 
-    operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.5), 
-                    ("-", lambda x, y: jnp.subtract(x, y), 2, 0.5),
-                    ("*", lambda x, y: jnp.multiply(x, y), 2, 0.5),
-                    ("log", lambda x: jnp.log(x + 1e-7), 1, 0.1),
-                    ]
+    operator_list = [
+        {"string": "+", "fn": lambda x, y: jnp.add(x, y), "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "-", "fn": lambda x, y: jnp.subtract(x, y), "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "*", "fn": lambda x, y: jnp.multiply(x, y), "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "log", "fn": lambda x: jnp.log(x + 1e-7), "arity": 1, "prob": 0.1, "flops": 1}
+    ]
 
     variable_list = [["pred", "y"]]
 

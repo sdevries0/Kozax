@@ -184,11 +184,13 @@ if __name__ == "__main__":
     state_size = 2
 
     #Define expressions
-    operator_list = [("+", lambda x, y: x + y, 2, 0.5), 
-                    ("-", lambda x, y: x - y, 2, 0.1),
-                    ("*", lambda x, y: x * y, 2, 0.5),
-                    ("sin", lambda x: jnp.sin(x), 1, 0.1),
-                    ("cos", lambda x: jnp.cos(x), 1, 0.1)]
+    operator_list = [
+        {"string": "+", "fn": lambda x, y: x + y, "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "-", "fn": lambda x, y: x - y, "arity": 2, "prob": 0.1, "flops": 1},
+        {"string": "*", "fn": lambda x, y: x * y, "arity": 2, "prob": 0.5, "flops": 1},
+        {"string": "sin", "fn": lambda x: jnp.sin(x), "arity": 1, "prob": 0.1, "flops": 1},
+        {"string": "cos", "fn": lambda x: jnp.cos(x), "arity": 1, "prob": 0.1, "flops": 1}
+    ]
 
     variable_list = [["x" + str(i) for i in range(env.n_obs)] + ["a1", "a2", "u"], ["a1", "a2"]]
 

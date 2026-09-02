@@ -218,32 +218,51 @@ def nsga2(metrics: Array) -> Tuple[Array, Array]:
     Tuple[Array, Array]
         Dominance ranks and crowding distances for each individual.
     """
+    # JIT-friendly NSGA-II: precompute pairwise dominance matrix once,
+    # then iteratively extract non-dominated fronts using boolean masks.
     n_solutions = metrics.shape[0]
-    all_indices = jnp.ones(n_solutions)
-    crowding_distances = jnp.zeros(n_solutions)
+
+    # Pairwise comparison: does solution j dominate i?
+    metrics_i = jnp.expand_dims(metrics, axis=1)  # (n,1,d)
+    metrics_j = jnp.expand_dims(metrics, axis=0)  # (1,n,d)
+
+    j_better_or_equal = (metrics_j <= metrics_i)
+    j_strictly_better = (metrics_j < metrics_i)
+    j_dominates_i = jnp.all(j_better_or_equal, axis=2) & jnp.any(j_strictly_better, axis=2)
+    # avoid self-dominance
+    j_dominates_i = j_dominates_i & (~jnp.eye(n_solutions, dtype=bool))
+
+    # Initialize state
+    alive = jnp.ones(n_solutions, dtype=bool)
+    ranks = -jnp.ones(n_solutions, dtype=jnp.int32)
+    distances = jnp.zeros(n_solutions)
+    current_rank = jnp.array(0, dtype=jnp.int32)
 
     def cond_fun(state):
-        selected_count, remaining_indices, _, _ = state
-        return jnp.sum(remaining_indices) > 0
+        alive_mask, _, _, _ = state
+        return jnp.any(alive_mask)
 
     def body_fun(state):
-        current_rank, remaining_indices, ranks, distances = state
-        remaining_metrics = jnp.where(remaining_indices[:, None], metrics, jnp.inf * jnp.ones_like(metrics))
-        non_dominated = identify_non_dominated(remaining_metrics)
-        
-        # Calculate crowding distance for this front
-        front_crowding = calculate_crowding_distance(metrics, non_dominated)
-        
-        ranks = jnp.where(non_dominated, current_rank * jnp.ones_like(ranks), ranks)
-        distances = jnp.where(non_dominated, front_crowding, distances)
-        
-        remaining_indices = jnp.where(non_dominated, jnp.zeros_like(remaining_indices), remaining_indices)
-        
-        return current_rank + 1, remaining_indices, ranks, distances
+        alive_mask, ranks, distances, current_rank = state
 
-    initial_state = (0, all_indices, all_indices * 0, crowding_distances)
-    
-    _, _, ranks, distances = jax.lax.while_loop(cond_fun, body_fun, initial_state)
+        # Count how many alive solutions dominate each i
+        dominated_count = jnp.sum(j_dominates_i & alive_mask[None, :], axis=1)
+
+        # Front: alive and dominated_count == 0
+        front = (dominated_count == 0) & alive_mask
+
+        # Compute crowding for this front
+        front_crowding = calculate_crowding_distance(metrics, front)
+
+        ranks = jnp.where(front, current_rank, ranks)
+        distances = jnp.where(front, front_crowding, distances)
+
+        alive_mask = alive_mask & (~front)
+        current_rank = current_rank + 1
+
+        return alive_mask, ranks, distances, current_rank
+
+    alive_mask, ranks, distances, _ = jax.lax.while_loop(cond_fun, body_fun, (alive, ranks, distances, current_rank))
 
     return ranks, distances
 
@@ -358,7 +377,8 @@ def evolve_populations(jit_evolve_population: Callable,
                        migration_period: int, 
                        migration_size: int, 
                        reproduction_type_probabilities: Array, 
-                       reproduction_probabilities: Array) -> Array:
+                       reproduction_probabilities: Array,
+                       population_indices: Array) -> Array:
     """Evolves each population independently.
 
     Parameters
@@ -388,7 +408,6 @@ def evolve_populations(jit_evolve_population: Callable,
         Evolved populations.
     """
     num_populations, population_size, _, _, _ = populations.shape
-    population_indices = jnp.arange(population_size)
 
     nsga_ranks, crowding_distances = jax.vmap(nsga2, out_axes=(0, 0))(metrics)
 
