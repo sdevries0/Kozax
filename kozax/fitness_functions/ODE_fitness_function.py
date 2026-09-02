@@ -56,7 +56,7 @@ class ODEFitnessFunction(BaseFitnessFunction):
     def __init__(self, solver: diffrax.AbstractSolver = diffrax.Euler(), dt0: float = 0.01, max_steps: int = 16**4, stepsize_controller: diffrax.AbstractStepSizeController = diffrax.ConstantStepSize()) -> None:
         super().__init__()
         self.dt0 = dt0
-        self.MSE = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys - true_ys), axis=-1))/jnp.mean(jnp.abs(true_ys))
+        self.mse = lambda pred_ys, true_ys: jnp.mean(jnp.sum(jnp.abs(pred_ys - true_ys), axis=-1))/jnp.mean(jnp.abs(true_ys))
         self.system = diffrax.ODETerm(self.drift)
         self.solver = solver
         self.stepsize_controller = stepsize_controller
@@ -81,7 +81,7 @@ class ODEFitnessFunction(BaseFitnessFunction):
             Fitness of the candidate.
         """
         x0, ts, ys = data
-        fitness = jax.vmap(self.evaluate_time_series, in_axes=[None, 0, None, 0, None])(candidate, x0, ts, ys, tree_evaluator)
+        fitness, _ = jax.vmap(self.evaluate_time_series, in_axes=[None, 0, None, 0, None])(candidate, x0, ts, ys, tree_evaluator)
         return jnp.mean(fitness)
     
     def evaluate_time_series(self, candidate: Array, x0: Array, ts: Array, ys: Array, tree_evaluator: Callable) -> float:
@@ -112,8 +112,8 @@ class ODEFitnessFunction(BaseFitnessFunction):
             adjoint=diffrax.DirectAdjoint(), throw=False
         )
         pred_ys = sol.ys
-        fitness = self.MSE(pred_ys, ys)
-        return fitness
+        fitness = self.mse(pred_ys, ys)
+        return fitness, pred_ys
     
     def drift(self, t: float, x: Array, args: Tuple) -> Array:
         """
