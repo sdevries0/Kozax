@@ -113,6 +113,7 @@ class GeneticProgramming:
                  tournament_size: int = 7,
                  constant_optimization: bool = False,
                  constant_optimization_steps: int = 1,
+                 n_offspring=10,
                  optimize_constants_elite: int = 100,
                  optimizer_class = optax.adam,
                  constant_step_size: float = 0.1,
@@ -295,11 +296,12 @@ class GeneticProgramming:
             self.optimize_constants_elite = optimize_constants_elite
         self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
+        self.n_offspring = n_offspring
 
         if (self.n_objectives>1) and self.constant_optimization:
             print("Note that only the first objective is used for constant optimisation.")
 
-        self.optimize_constants_function = partial(self.optimize_constants, n_epoch=constant_optimization_steps)
+        self.optimize_constants_function = partial(self.optimize_constants2, n_epoch=constant_optimization_steps)
 
         # Define sharded functions for evaluation and optimization
         @partial(shard_map, mesh=self.mesh, in_specs=(P('i'), P(None)), out_specs=P('i'), check_vma=False)
@@ -1005,6 +1007,77 @@ class GeneticProgramming:
         candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(candidate_history, best_indices)  # Get best candidate during constant optimization
 
         return fitness, candidates
+
+    def optimize_constants_generation(self, carry: Tuple[Array, Tuple, PRNGKey], x: int) -> Tuple[Tuple[Array, Tuple, PRNGKey], float]:
+        """
+        optimizes a generation of candidates.
+
+        Parameters
+        ----------
+        carry : Tuple[Array, Tuple, PRNGKey]
+            Tuple containing candidate, data, and key.
+        x : int
+            Unused parameter for scan.
+
+        Returns
+        -------
+        Tuple[Tuple[Array, Tuple, PRNGKey], float]
+            Tuple containing updated candidate, data, and key, and the best fitness.
+        """
+
+        candidate, data, key, step_size = carry
+
+        key, sample_key = jr.split(key)
+
+        mask = candidate[..., 0] == 1.0 #Only samples mutations for the nodes that contain a constant
+        mutations = jax.vmap(lambda _key: step_size * jr.normal(_key, shape=(self.num_trees, self.max_nodes,)) * mask)(jr.split(sample_key, self.n_offspring))
+        mutations = jnp.vstack([jnp.zeros((1, self.num_trees, self.max_nodes)), mutations])
+
+        offspring = jax.vmap(lambda m: candidate.at[..., 3].set(candidate[..., 3] + m))(mutations)
+
+        fitness = jax.vmap(self.partial_fitness_function, in_axes=[0,0,None])(offspring[..., 3:], offspring[..., :3], data)
+
+        # Preserve objective vectors and select by the first objective, matching
+        # optimize_constants_epoch's multi-objective behavior.
+        if self.n_objectives > 1:
+            candidate_has_invalid = jax.vmap(
+                lambda candidate_fitness: jnp.any(
+                    jnp.isinf(candidate_fitness) | jnp.isnan(candidate_fitness)
+                )
+            )(fitness)
+            fitness = jnp.where(
+                candidate_has_invalid[:, None],
+                jnp.ones_like(fitness) * self.max_fitness,
+                fitness,
+            )
+            fitness = jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
+            best_index = jnp.argmin(fitness[:, 0])
+            best_fitness = fitness[best_index]
+        else:
+            nan_or_inf = jax.vmap(
+                lambda candidate_fitness: jnp.isinf(candidate_fitness) | jnp.isnan(candidate_fitness)
+            )(fitness)
+            fitness = jnp.where(nan_or_inf, jnp.ones_like(fitness) * self.max_fitness, fitness)
+            fitness = jnp.minimum(fitness, self.max_fitness * jnp.ones_like(fitness))
+            best_index = jnp.argmin(fitness)
+            best_fitness = fitness[best_index]
+
+        return (offspring[best_index], data, key, step_size), best_fitness
+
+    def optimize_constants2(self, candidates: Array, data: Tuple, keys: PRNGKey, step_size: float, n_epoch: int):
+
+        opt_f = jax.vmap(lambda c, k: jax.lax.scan(self.optimize_constants_generation, (c, data, k, step_size), length=n_epoch))
+        (new_candidates, _, _, _), fitness = opt_f(candidates, keys)
+
+        # if self.n_objectives > 1:
+        #     best_index = jnp.argmin(fitness[...,0], axis=1)
+        #     best_fitness = jnp.take_along_axis(fitness, best_index, axis=1)
+        # else:
+        #     best_fitness = jnp.min(fitness, axis=1)
+
+        best_fitness = fitness[:,-1]
+
+        return best_fitness, new_candidates
 
     def find_duplicates(self, population: Array, fitness: Array) -> Tuple[Array, Array]:
         """
