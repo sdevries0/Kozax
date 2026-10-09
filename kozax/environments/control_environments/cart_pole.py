@@ -8,7 +8,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from kozax.environments.control_environments.control_environment_base import EnvironmentBase
 from jaxtyping import Array
 from typing import Tuple
@@ -72,7 +72,7 @@ class CartPole(EnvironmentBase):
         self.Q = jnp.array(0)
         self.R = jnp.array([[0.0]])
 
-    def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Tuple[Array, Array]:
+    def sample_init_states(self, batch_size: int, key: jr.PRNGKey) -> Tuple[Array, Array]:
         """
         Samples initial states for the environment.
 
@@ -90,12 +90,12 @@ class CartPole(EnvironmentBase):
         targets : :class:`jax.Array`
             Target states.
         """
-        init_key, target_key = jrandom.split(key)
-        x0 = jrandom.uniform(init_key, shape=(batch_size, self.n_var), minval=-self.init_bounds, maxval=self.init_bounds)
+        init_key, target_key = jr.split(key)
+        x0 = jr.uniform(init_key, shape=(batch_size, self.n_var), minval=-self.init_bounds, maxval=self.init_bounds)
         targets = jnp.zeros((batch_size, self.n_targets))
         return x0, targets
     
-    def sample_params(self, batch_size: int, mode: str, ts: Array, key: jrandom.PRNGKey) -> Array:
+    def sample_params(self, batch_size: int, mode: str, ts: Array, key: jr.PRNGKey) -> Array:
         """
         Samples parameters for the environment.
 

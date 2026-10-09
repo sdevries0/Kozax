@@ -76,27 +76,6 @@ class EnvironmentBase(abc.ABC):
         """
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def diffusion(self, t: float, state: Array, args: Tuple) -> Array:
-        """
-        Computes the diffusion function for the environment.
-
-        Parameters
-        ----------
-        t : float
-            Current time.
-        state : :class:`jax.Array`
-            Current state.
-        args : tuple
-            Additional arguments.
-
-        Returns
-        -------
-        :class:`jax.Array`
-            Diffusion.
-        """
-        raise NotImplementedError
-
     def terminate_event(self, state: Array, **kwargs) -> bool:
         """
         Checks if the termination condition is met.

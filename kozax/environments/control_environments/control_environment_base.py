@@ -8,7 +8,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 import abc
 
 _itemsize_kind_type = {
@@ -37,21 +37,13 @@ class EnvironmentBase(abc.ABC):
         self.n_obs = n_obs
 
     @abc.abstractmethod
-    def initialize_parameters(self, params, ts):
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def sample_init_states(self, batch_size, key):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def sample_params(self, batch_size, mode, ts, key):
         raise NotImplementedError
 
     def f_obs(self, key, t_x):
         t, x = t_x
-        new_key = jrandom.fold_in(key, force_bitcast_convert_type(t))
-        out = self.C@x + jrandom.normal(new_key, shape=(self.n_obs,))@self.W
+        new_key = jr.fold_in(key, force_bitcast_convert_type(t))
+        out = self.C@x + jr.normal(new_key, shape=(self.n_obs,))@self.W
         return key, out
     
     @abc.abstractmethod

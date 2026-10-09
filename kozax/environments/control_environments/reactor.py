@@ -8,7 +8,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 
 import jax.numpy as jnp
 import jax
-import jax.random as jrandom
+import jax.random as jr
 import diffrax
 from kozax.environments.control_environments.control_environment_base import EnvironmentBase
 from jaxtyping import Array
@@ -128,7 +128,7 @@ class StirredTankReactor(EnvironmentBase):
         self.max_control_ts = diffrax.LinearInterpolation(ts, jnp.hstack([mc * jnp.ones(int(ts.shape[0] // self.max_control.shape[0])) for mc in self.max_control]))
         self.external_influence = diffrax.LinearInterpolation(ts, jax.vmap(self.external_f)(ts))
 
-    def sample_param_change(self, key: jrandom.PRNGKey, batch_size: int, ts: Array, low: float, high: float) -> Array:
+    def sample_param_change(self, key: jr.PRNGKey, batch_size: int, ts: Array, low: float, high: float) -> Array:
         """
         Samples parameter changes over time.
 
@@ -150,13 +150,13 @@ class StirredTankReactor(EnvironmentBase):
         :class:`jax.Array`
             Sampled parameter values.
         """
-        init_key, decay_key = jrandom.split(key)
-        decay_factors = jrandom.uniform(decay_key, shape=(batch_size,), minval=1.01, maxval=1.02)
-        init_values = jrandom.uniform(init_key, shape=(batch_size,), minval=low, maxval=high)
+        init_key, decay_key = jr.split(key)
+        decay_factors = jr.uniform(decay_key, shape=(batch_size,), minval=1.01, maxval=1.02)
+        init_values = jr.uniform(init_key, shape=(batch_size,), minval=low, maxval=high)
         values = jax.vmap(lambda v, d, t: v * (d ** t), in_axes=[0, 0, None])(init_values, decay_factors, ts)
         return values
 
-    def sample_params(self, batch_size: int, mode: str, ts: Array, key: jrandom.PRNGKey) -> Tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
+    def sample_params(self, batch_size: int, mode: str, ts: Array, key: jr.PRNGKey) -> Tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
         """
         Samples parameters for the environment.
 
@@ -186,28 +186,28 @@ class StirredTankReactor(EnvironmentBase):
             Tcf = 300 * jnp.ones(batch_size)
             Volc = 20.0 * jnp.ones(batch_size)
         elif mode == "Different":
-            keys = jrandom.split(key, 8)
-            Vol = jrandom.uniform(keys[0], (batch_size,), minval=75, maxval=150)
-            Cp = jrandom.uniform(keys[1], (batch_size,), minval=200, maxval=350)
-            dHr = jrandom.uniform(keys[2], (batch_size,), minval=-55000, maxval=-45000)
-            UA = jrandom.uniform(keys[3], (batch_size,), minval=25000, maxval=75000)
-            q = jrandom.uniform(keys[4], (batch_size,), minval=75, maxval=125)
-            Tf = jnp.repeat(jrandom.uniform(keys[5], (batch_size,), minval=300, maxval=350)[:, None], ts.shape[0], axis=1)
-            Tcf = jrandom.uniform(keys[6], (batch_size,), minval=250, maxval=300)
-            Volc = jrandom.uniform(keys[7], (batch_size,), minval=10, maxval=30)
+            keys = jr.split(key, 8)
+            Vol = jr.uniform(keys[0], (batch_size,), minval=75, maxval=150)
+            Cp = jr.uniform(keys[1], (batch_size,), minval=200, maxval=350)
+            dHr = jr.uniform(keys[2], (batch_size,), minval=-55000, maxval=-45000)
+            UA = jr.uniform(keys[3], (batch_size,), minval=25000, maxval=75000)
+            q = jr.uniform(keys[4], (batch_size,), minval=75, maxval=125)
+            Tf = jnp.repeat(jr.uniform(keys[5], (batch_size,), minval=300, maxval=350)[:, None], ts.shape[0], axis=1)
+            Tcf = jr.uniform(keys[6], (batch_size,), minval=250, maxval=300)
+            Volc = jr.uniform(keys[7], (batch_size,), minval=10, maxval=30)
         elif mode == "Changing":
-            keys = jrandom.split(key, 8)
-            Vol = jrandom.uniform(keys[0], (batch_size,), minval=75, maxval=150)
-            Cp = jrandom.uniform(keys[1], (batch_size,), minval=200, maxval=350)
-            dHr = jrandom.uniform(keys[2], (batch_size,), minval=-55000, maxval=-45000)
-            UA = jrandom.uniform(keys[3], (batch_size,), minval=25000, maxval=75000)
-            q = jrandom.uniform(keys[4], (batch_size,), minval=75, maxval=125)
+            keys = jr.split(key, 8)
+            Vol = jr.uniform(keys[0], (batch_size,), minval=75, maxval=150)
+            Cp = jr.uniform(keys[1], (batch_size,), minval=200, maxval=350)
+            dHr = jr.uniform(keys[2], (batch_size,), minval=-55000, maxval=-45000)
+            UA = jr.uniform(keys[3], (batch_size,), minval=25000, maxval=75000)
+            q = jr.uniform(keys[4], (batch_size,), minval=75, maxval=125)
             Tf = self.sample_param_change(keys[5], batch_size, ts, 300, 350)
-            Tcf = jrandom.uniform(keys[6], (batch_size,), minval=250, maxval=300)
-            Volc = jrandom.uniform(keys[7], (batch_size,), minval=10, maxval=30)
+            Tcf = jr.uniform(keys[6], (batch_size,), minval=250, maxval=300)
+            Volc = jr.uniform(keys[7], (batch_size,), minval=10, maxval=30)
         return Vol, Cp, dHr, UA, q, Tf, Tcf, Volc
 
-    def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Tuple[Array, Array]:
+    def sample_init_states(self, batch_size: int, key: jr.PRNGKey) -> Tuple[Array, Array]:
         """
         Samples initial states for the environment.
 
@@ -225,9 +225,9 @@ class StirredTankReactor(EnvironmentBase):
         targets : :class:`jax.Array`
             Target states.
         """
-        init_key, target_key = jrandom.split(key)
-        x0 = jrandom.uniform(init_key, shape=(batch_size, self.n_var), minval=self.init_lower_bounds, maxval=self.init_upper_bounds)
-        targets = jrandom.uniform(target_key, shape=(batch_size, self.n_targets), minval=400, maxval=480)
+        init_key, target_key = jr.split(key)
+        x0 = jr.uniform(init_key, shape=(batch_size, self.n_var), minval=self.init_lower_bounds, maxval=self.init_upper_bounds)
+        targets = jr.uniform(target_key, shape=(batch_size, self.n_targets), minval=400, maxval=480)
         return x0, targets
     
     def drift(self, t: float, state: Array, args: Tuple) -> Array:
