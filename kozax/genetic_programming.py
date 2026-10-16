@@ -30,14 +30,11 @@ from kozax.genetic_operators.mutation import initialize_mutation_functions
 from kozax.genetic_operators.reproduction import evolve_populations, evolve_population
 
 # Function containers
-def lambda_operator_arity1(f):
-    return lambda x, y, _data: f(x)
-
-def lambda_operator_arity2(f):
-    return lambda x, y, _data: f(x, y)
+def lambda_operator_arity(f, n):
+    return lambda x, _data: f(*x[:n])
 
 def lambda_leaf(i):
-    return lambda x, y, _data: _data[i]
+    return lambda x, _data: _data[i]
 
 class GeneticProgramming:
     """Genetic programming strategy of symbolic expressions.
@@ -84,6 +81,10 @@ class GeneticProgramming:
         Value of the step size for the optimizer.
     max_fitness : float, optional
         Maximum fitness value.
+    max_pareto_size : int, optional
+        Maximum number of solutions retained in the Pareto front.
+    pareto_preprune_factor : int, optional
+        Multiplier used to bound candidate pool size before non-dominated sorting.
     reproduction_probability_factors : Tuple[float], optional
         The reproduction probability for each subpopulation.
     crossover_probability_factors : Tuple[float], optional
@@ -107,7 +108,7 @@ class GeneticProgramming:
                  num_ouputs_per_tree: int = 1,
                  device_type: str = 'cpu',
                  complexity_objective: bool = False,
-                 constant_sd: float = 1.0,
+                 constant_sd: float | Array = 1.0,
                  punish_duplicates: bool = True,
                  migration_period: int = 5,
                  migration_size: float = 10,
@@ -118,6 +119,8 @@ class GeneticProgramming:
                  optimizer_class = optax.adam,
                  constant_step_size: float = 0.1,
                  max_fitness: float = 1e8,
+                 max_pareto_size: int | None = None,
+                 pareto_preprune_factor: int = 4,
                  reproduction_probability_factors: float | Tuple[float] = (0.75, 0.75),
                  crossover_probability_factors: float | Tuple[float] = (0.9, 0.1),
                  mutation_probability_factors: float | Tuple[float] = (0.1, 0.9),
@@ -127,17 +130,16 @@ class GeneticProgramming:
         assert num_populations > 0, "The number of populations should be larger than 0"
         self.num_populations = num_populations
         assert population_size > 0 and population_size % 2 == 0, "The population_size should be larger than 0 and an even number"
-        if constant_optimization:
-            self.optimize_constants_elite = jnp.minimum(optimize_constants_elite, num_populations*population_size)
+        
         self.population_size = population_size
         assert max_init_depth > 0, "The max initial depth should be larger than 0"
-        self.max_init_depth = max_init_depth
+        self.max_init_depth = jnp.minimum(max_init_depth, 10)
         assert max_nodes > 0, "The max number of nodes should be larger than 0"
         self.max_nodes = max_nodes
         self.num_trees = jnp.sum(self.layer_sizes).item()
         assert self.num_trees > 0, "The number of trees should be larger than 0"
         assert tournament_size > 1, "The tournament size should be larger than 1"
-        self.tournament_size = tournament_size
+        self.tournament_size = jnp.minimum(tournament_size, self.population_size).item()
         self.num_ouputs = num_ouputs_per_tree
 
         self.n_objectives = fitness_function.n_objectives
@@ -148,8 +150,23 @@ class GeneticProgramming:
         assert num_generations > 0, "The number of generations should be larger than 0"
         self.num_generations = num_generations
 
-        self.constant_sd = constant_sd
-        self.punish_duplicates = punish_duplicates
+
+
+        if isinstance(constant_sd, float) or isinstance(constant_sd, int):
+            self.constant_sd_array = constant_sd * jnp.ones(jnp.sum(layer_sizes))
+        else:
+            assert isinstance(constant_sd, jnp.ndarray)
+            if len(constant_sd)>1:
+                assert len(constant_sd) == len(layer_sizes), "Either select on value for the constant standard deviation, or provide one value for each type of tree (len(layer_sizes))"
+                constant_sd_array = jnp.zeros(jnp.sum(layer_sizes))
+                counter = 0
+                for i in range(constant_sd.shape[0]):
+                    constant_sd_array = constant_sd_array.at[counter: counter+layer_sizes[i]].set(constant_sd[i])
+                    counter += layer_sizes[i]
+            else:
+                constant_sd_array = constant_sd * jnp.ones(jnp.sum(layer_sizes))
+
+            self.constant_sd_array = constant_sd_array
 
         assert migration_period > 1, "The migration period should be larger than 1"
         self.migration_period = migration_period
@@ -179,16 +196,31 @@ class GeneticProgramming:
         self.reproduction_probabilities = jnp.linspace(*reproduction_probability_factors, self.num_populations)
 
         self.max_fitness = max_fitness
+        if max_pareto_size is None:
+            max_pareto_size = max(2 * self.population_size, 256)
+        assert max_pareto_size > 0, "The maximum pareto size should be larger than 0"
+        assert pareto_preprune_factor >= 1, "The pareto preprune factor should be at least 1"
+        self.max_pareto_size = max_pareto_size
+        self.pareto_preprune_size = self.max_pareto_size * pareto_preprune_factor
         self.complexities = jnp.arange(self.num_trees * self.max_nodes)
 
-        # Create a mapping from indices in breadth first space to depth first space
-        self.map_b_to_d = self.map_breadth_indices_to_depth_indices(jnp.maximum(self.max_init_depth, 3))
-
-        # Define general tree structures
-        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 5))
-        self.empty_tree = jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0, 0.0]), (self.max_nodes, 1))
+        self.punish_duplicates = punish_duplicates
 
         self.initialize_node_library(operator_list, variable_list)
+
+        init_depth = int(jnp.maximum(self.max_init_depth, 3))
+        if self.max_arity == 1:
+            init_tree_size = init_depth
+        else:
+            init_tree_size = (self.max_arity**init_depth - 1) // (self.max_arity - 1)
+
+        # Create a mapping from breadth-first indices to depth-first/postorder indices.
+        self.map_b_to_d = self.map_breadth_indices_to_depth_indices(init_depth)
+
+        # Define general tree structures
+        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 2 + self.max_arity))
+        self.empty_row = -jnp.ones(2 + self.max_arity).at[0].set(0).at[-1].set(0)
+        self.empty_tree = jnp.tile(self.empty_row, (self.max_nodes, 1))
 
         print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices[1:]]}.")
 
@@ -197,19 +229,21 @@ class GeneticProgramming:
                             self.operator_indices, 
                             self.operator_probabilities, 
                             self.slots, 
-                            self.constant_sd,
-                            self.map_b_to_d)
+                            self.map_b_to_d,
+                            jnp.arange(self.max_arity))
                 
         self.sample_tree = partial(sample_tree,
                                    max_nodes=self.max_nodes, 
-                                   tree_size=2**jnp.maximum(self.max_init_depth, 3) - 1,
+                                   tree_size=init_tree_size,
+                                   args=self.sample_args,
                                    num_outputs=self.num_ouputs,
-                                   args=self.sample_args)
+                                   max_arity = self.max_arity)
         
         self.sample_population = partial(sample_population, 
                                          num_trees=self.num_trees, 
                                          max_init_depth=self.max_init_depth, 
                                          variable_array=self.variable_array,
+                                         constant_sd_array=self.constant_sd_array,
                                          sample_function=self.sample_tree)
 
         self.mutate_args = (self.sample_tree, 
@@ -220,14 +254,17 @@ class GeneticProgramming:
                             self.operator_probabilities, 
                             self.slots, 
                             self.num_ouputs,
-                            self.constant_sd)
+                            self.constant_sd,
+                            self.tree_indices)
 
         self.mutate_trees = initialize_mutation_functions(self.mutate_args)
 
         self.partial_crossover = partial(crossover_trees, 
                                          operator_indices=self.operator_indices, 
                                          max_nodes=self.max_nodes,
-                                         num_ouputs=self.num_ouputs)
+                                         num_ouputs=self.num_ouputs,
+                                         max_arity=self.max_arity, 
+                                         tree_indices=self.tree_indices)
 
         self.reproduction_functions = [self.partial_crossover, self.mutate_pair, self.sample_pair]
 
@@ -261,7 +298,10 @@ class GeneticProgramming:
         
         # Define hyperparameters for constant optimization
         self.constant_step_size = constant_step_size
-        self.optimize_constants_elite = optimize_constants_elite
+        if constant_optimization:
+            self.optimize_constants_elite = min(optimize_constants_elite, num_populations * population_size)
+        else:
+            self.optimize_constants_elite = optimize_constants_elite
         self.constant_optimization = constant_optimization
         self.optimizer_class = optimizer_class
 
@@ -344,22 +384,33 @@ class GeneticProgramming:
         Array
             Index mapping.
         """
-        max_nodes = 2**depth - 1
-        current_depth = 0
-        map_b_to_d = jnp.zeros(max_nodes)
+        depth = int(depth)
+        arity = int(self.max_arity)
 
-        for i in range(max_nodes):
-            if i > 0:
-                parent = (i + (i % 2) - 2) // 2  # Determine parent position
-                value = map_b_to_d[parent]
-                if (i % 2) == 0:  # Right child
-                    new_value = value + 2**(depth - current_depth + 1)
-                else:  # Left child
-                    new_value = value + 1
-                map_b_to_d = map_b_to_d.at[i].set(new_value)
-            current_depth += i == (2**current_depth - 1)  # If last node at current depth is reached, increase current depth
+        if arity == 1:
+            max_nodes = depth
+        else:
+            max_nodes = (arity**depth - 1) // (arity - 1)
 
-        return max_nodes - 1 - map_b_to_d  # Inverse the mapping
+        # Compute depth-first (postorder) indices with right-to-left child traversal
+        # so every child index is smaller than its parent index.
+        order = []
+
+        def _postorder(node_idx: int) -> None:
+            first_child = arity * node_idx + 1
+            for child_offset in range(arity - 1, -1, -1):
+                child_idx = first_child + child_offset
+                if child_idx < max_nodes:
+                    _postorder(child_idx)
+            order.append(node_idx)
+
+        _postorder(0)
+
+        map_b_to_d = jnp.zeros(max_nodes, dtype=jnp.int32)
+        for depth_idx, breadth_idx in enumerate(order):
+            map_b_to_d = map_b_to_d.at[breadth_idx].set(depth_idx)
+
+        return map_b_to_d
 
     def initialize_node_library(self, operator_list: list, variable_list: list) -> None:
         """
@@ -374,12 +425,12 @@ class GeneticProgramming:
         """
         string_to_node = {}  # Maps string to node
         node_to_string = {}
-        node_function_list = [lambda x, y, _data: 0.0, lambda x, y, _data: 0.0]
+        node_function_list = [lambda x, _data: 0.0, lambda x, _data: 0.0]
 
         if operator_list is None:
-            operator_list = [("+", lambda x, y: jnp.add(x, y), 2, 0.1), 
-                             ("-", lambda x, y: jnp.subtract(x, y), 2, 0.1),
-                             ("*", lambda x, y: jnp.multiply(x, y), 2, 0.1),
+            operator_list = [{"string": "+", "fn": lambda x, y: jnp.add(x, y), "arity": 2, "prob": 0.1}, 
+                             {"string": "-", "fn": lambda x, y: jnp.subtract(x, y), "arity": 2, "prob": 0.1},
+                             {"string": "*", "fn": lambda x, y: jnp.multiply(x, y), "arity": 2, "prob": 0.1},
                              ]
             
         if variable_list is None:
@@ -387,35 +438,36 @@ class GeneticProgramming:
             variable_list = [["x" + str(i) for i in range(self.layer_sizes[0])]]
 
         n_operands = [0, 0] #Add 0 for empty node and constant node
+        flop_list = [0.0, 0.0] # 0.0 FLOPs for empty node, 0.0 FLOPs for constant node
         index = 2
         operator_probabilities = jnp.zeros(len(operator_list))
+        max_arity = 2
 
         assert len(operator_list) > 0, "No operators were given"
 
-        for operator_tuple in operator_list:
-            string = operator_tuple[0]
-            f = operator_tuple[1] #Executable function
-            arity = operator_tuple[2] #Number of children
-            if len(operator_tuple) == 4:
-                probability = operator_tuple[3] #Probability of function to be sampled
-            else:
-                probability = 0.1
+        for operator_dict in operator_list:
+            string = operator_dict["string"]
+            f = operator_dict["fn"]
+            arity = operator_dict["arity"]
+            probability = operator_dict.get("prob", 0.1)
+            flops = operator_dict.get("flops", 1.0)
 
             if string not in string_to_node:
                 string_to_node[string] = index
                 node_to_string[index] = string
-                if arity == 1:
-                    node_function_list.append(lambda_operator_arity1(f))
-                    n_operands.append(1)
-                elif arity == 2:
-                    node_function_list.append(lambda_operator_arity2(f))
-                    n_operands.append(2)
+                node_function_list.append(lambda_operator_arity(f, arity))
+                n_operands.append(arity)
                 operator_probabilities = operator_probabilities.at[index - 2].set(probability)
+                flop_list.append(flops)
                 index += 1
+            
+            if arity > max_arity:
+                max_arity = arity
 
         self.operator_probabilities = operator_probabilities
         self.operator_indices = jnp.arange(2, index) #Store the indices corresponding to operator nodes
         var_start_index = index #The leaf nodes are appended to the operator list
+        self.max_arity = max_arity
 
         data_index = 0
         assert len(self.layer_sizes) == len(variable_list), "There is not a set of expressions for every type of layer"
@@ -435,6 +487,7 @@ class GeneticProgramming:
                         node_to_string[index] = var
                         node_function_list.append(lambda_leaf(data_index))
                         n_operands.append(0) #Leaf nodes have no children
+                        flop_list.append(0.0) # Variables have 0 FLOPs
                         index += 1
                         data_index += 1
                     except:
@@ -446,7 +499,7 @@ class GeneticProgramming:
         counter = 0
         for layer_i, var_list in enumerate(variable_list):
             p = jnp.zeros((data_index + 1))
-            if self.constant_sd > 0.0:
+            if self.constant_sd_array[layer_i] > 0.0:
                 p = p.at[0].set(0.1)
             for var_or_tuple in var_list:
                 if isinstance(var_or_tuple, str): #Variables may be provided with or without probability
@@ -466,6 +519,7 @@ class GeneticProgramming:
         self.node_to_string = node_to_string
         self.node_function_list = node_function_list
         self.variable_array = variable_array
+        self.operator_flops = jnp.array(flop_list)
 
     def fit(self, key: PRNGKey, data: Tuple, verbose: int = 0, save_pareto_front: bool = False, path_to_file: str = None, track_fitness: bool = False) -> None:
         """
@@ -537,9 +591,9 @@ class GeneticProgramming:
 
         # The Pareto front keeps track of the best solutions at each complexity level
         if self.n_objectives==1:
-            self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, 5)))    
+            self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, self.max_arity+2)))    
         else:
-            self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, 5)))        
+            self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, self.max_arity+2)))        
 
     def initialize_population(self, key: PRNGKey) -> Array:
         """
@@ -582,8 +636,8 @@ class GeneticProgramming:
             populations, fitness = jax.vmap(self.find_duplicates)(populations, fitness) #Give duplicate candidates poor fitness
         
         if self.complexity_objective:
-            complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(candidate[:,:,0]!=0))(population))(populations)
-            complexities = jnp.maximum(complexities, 5*self.num_trees*jnp.ones_like(complexities))
+            complexities = jax.vmap(lambda population: jax.vmap(lambda candidate: jnp.sum(self.operator_flops[candidate[:,:,0].astype(int)]))(population))(populations)
+            complexities = jnp.maximum(complexities, 5*jnp.ones_like(complexities))
             fitness = jnp.concatenate([fitness, complexities[:,:,None]], axis=-1)
 
         new_populations = evolve_populations(self.jit_evolve_population, 
@@ -595,7 +649,7 @@ class GeneticProgramming:
                                              self.migration_size, 
                                              self.reproduction_type_probabilities, 
                                              self.reproduction_probabilities,
-                                             self.variable_indices)
+                                             jnp.arange(self.population_size))
         
         self.current_generation += 1
         return self.jit_simplify_constants(new_populations)
@@ -620,7 +674,7 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Pair of candidates after mutation.
         """
-        offspring = jax.vmap(self.mutate_trees, in_axes=[0,1,None,None])(jnp.stack([parent1, parent2]), keys, reproduction_probability, self.variable_array)
+        offspring = jax.vmap(self.mutate_trees, in_axes=[0,1,None,None,None])(jnp.stack([parent1, parent2]), keys, reproduction_probability, self.variable_array, self.constant_sd_array)
         return offspring[0], offspring[1]
 
     def sample_pair(self, parent1: Array, parent2: Array, keys: Array, reproduction_probability: float) -> Tuple[Array, Array]:
@@ -643,10 +697,32 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Pair of candidates.
         """
-        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0, None])(_keys, self.max_init_depth, self.variable_array, True), in_axes=[1])(keys)
+        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0, None])(_keys, self.max_init_depth, self.variable_array, True, self.constant_sd_array), in_axes=[1])(keys)
         return offspring[0], offspring[1]
 
-    def simplify_constants_in_row(self, i: int, carry: Tuple[Array, Array, Array]) -> Tuple[Array, Array, Array]:
+    def compact_tree_rows(self, tree: Array) -> Array:
+        """Compacts non-empty rows to the active suffix and remaps child indices."""
+        non_empty_mask = tree[:, 0] != 0
+        num_non_empty = jnp.sum(non_empty_mask)
+        num_empty = self.max_nodes - num_non_empty
+
+        non_empty_pos = jnp.cumsum(non_empty_mask.astype(jnp.int32)) - 1
+        empty_pos = jnp.cumsum((~non_empty_mask).astype(jnp.int32)) - 1
+
+        new_non_empty_idx = num_empty + non_empty_pos
+        new_idx = jnp.where(non_empty_mask, new_non_empty_idx, empty_pos).astype(jnp.int32)
+        old_to_new = jnp.where(non_empty_mask, new_non_empty_idx, -1).astype(jnp.int32)
+
+        compact_tree = self.empty_tree.at[new_idx].set(tree)
+
+        refs = compact_tree[:, 1:-1].astype(jnp.int32)
+        valid_ref = (refs >= 0) & (refs < self.max_nodes)
+        safe_refs = jnp.where(valid_ref, refs, 0)
+        remapped_refs = jnp.where(valid_ref, old_to_new[safe_refs], -1)
+        remapped_refs = jnp.where(compact_tree[:, 0:1] == 0, -1, remapped_refs)
+        return compact_tree.at[:, 1:-1].set(remapped_refs)
+
+    def simplify_constants_in_row(self, i: int, carry: Tuple[Array, Array]) -> Tuple[Array, Array]:
         """
         Simplifies the constants in a tree.
 
@@ -654,35 +730,45 @@ class GeneticProgramming:
         ----------
         i : int
             Index of the node.
-        carry : Tuple[Array, Array, Array]
-            Tuple containing the tree, tree indices, and empty tree.
+        carry : Tuple[Array, Array]
+            Tuple containing the current tree and an empty-tree template.
 
         Returns
         -------
-        Tuple[Array, Array, Array]
-            Simplified tree.
+        Tuple[Array, Array]
+            Updated tree and empty-tree template.
         """
-        tree, tree_indices, empty_tree = carry
-
-        last_node_idx = jnp.sum(tree[:,0]==0)
-        f_idx, a_idx, b_idx, output_index, constant = tree[i]
+        tree, empty_tree = carry
+        row = tree[i]
+        f_idx = row[0].astype(jnp.int32)
+        output_index = row[-2].astype(jnp.int32)
         output_index = output_index * (i == (self.max_nodes-1))
-        evaluated_subtree = tree.at[i].set(jnp.array([1.0, -1.0, -1.0, output_index, jax.lax.switch(f_idx.astype(int), self.node_function_list, tree[a_idx.astype(int), -1], tree[b_idx.astype(int), -1], jnp.zeros(1))]))
-        
-        one_branch_tree = jnp.where((tree_indices < i) & (tree_indices >= last_node_idx + 1), jnp.roll(tree, 1, axis=0), evaluated_subtree)
-        one_branch_tree = jnp.where(tree_indices < last_node_idx + 1, empty_tree, one_branch_tree)
-        one_branch_tree = one_branch_tree.at[:,1:3].set(jnp.where((one_branch_tree[:,1:3] < a_idx) & (one_branch_tree[:,1:3] > -1), one_branch_tree[:,1:3] + 1, one_branch_tree[:,1:3]))
-        
-        two_branch_tree = jnp.where((tree_indices < i) & (tree_indices >= last_node_idx + 2), jnp.roll(tree, 2, axis=0), evaluated_subtree)
-        two_branch_tree = jnp.where(tree_indices < last_node_idx + 2, empty_tree, two_branch_tree)
-        two_branch_tree = two_branch_tree.at[:,1:3].set(jnp.where((two_branch_tree[:,1:3] < b_idx) & (two_branch_tree[:,1:3] > -1), two_branch_tree[:,1:3] + 2, two_branch_tree[:,1:3]))
-        
-        new_tree = jax.lax.select((tree[a_idx.astype(int), 0] == 1) & (b_idx == -1), one_branch_tree, tree)
-        new_tree = jax.lax.select((tree[a_idx.astype(int), 0] == 1) & (tree[b_idx.astype(int), 0] == 1), two_branch_tree, new_tree)
 
-        new_tree = jax.lax.select(a_idx > -1, new_tree, tree)
+        child_indices = row[1:-2].astype(jnp.int32)
+        valid_child_mask = child_indices >= 0
+        safe_child_indices = jnp.where(valid_child_mask, child_indices, 0)
 
-        return (new_tree, tree_indices, empty_tree)
+        child_rows = tree[safe_child_indices]
+        child_are_constants = child_rows[:, 0] == 1
+        all_children_constant = jnp.all(jnp.where(valid_child_mask, child_are_constants, True))
+        has_children = jnp.any(valid_child_mask)
+        is_operator = f_idx >= 2
+        can_fold = has_children & all_children_constant & is_operator
+
+        inputs = jnp.where(valid_child_mask, child_rows[:, -1], 0.0)
+        folded_value = jax.lax.switch(f_idx.astype(int), self.node_function_list, inputs, jnp.zeros(1))
+        folded_row = row.at[0].set(1.0).at[1:-1].set(-1.0).at[-1].set(folded_value).set(-1.0).at[-2].set(output_index)
+
+        def fold_subtree(t: Array) -> Array:
+            t = t.at[i].set(folded_row)
+            old_child_rows = t[safe_child_indices]
+            cleared_child_rows = jnp.where(valid_child_mask[:, None], empty_tree[safe_child_indices], old_child_rows)
+            t = t.at[safe_child_indices].set(cleared_child_rows)
+            return self.compact_tree_rows(t)
+
+        new_tree = jax.lax.cond(can_fold, fold_subtree, lambda t: t, tree)
+
+        return (new_tree, empty_tree)
 
     def simplify_constants(self, tree: Array) -> Array:
         """
@@ -698,7 +784,7 @@ class GeneticProgramming:
         Array
             Simplified tree.
         """
-        tree, _, _ = jax.lax.fori_loop(0, self.max_nodes, self.simplify_constants_in_row, (tree, self.tree_indices, self.empty_tree))
+        tree, _ = jax.lax.fori_loop(0, self.max_nodes, self.simplify_constants_in_row, (tree, self.empty_tree))
 
         return tree
 
@@ -722,16 +808,23 @@ class GeneticProgramming:
         """
 
         tree, data, output_array = carry
-        f_idx, a_idx, b_idx, output_index, constant = tree[i]  # Get node function, index of first and second operand, and constant value of node (which will be 0 if the node function is not 1)
 
-        x = tree[a_idx.astype(int), 4]  # Value of first operand
-        y = tree[b_idx.astype(int), 4]  # Value of second operand
+        row = tree[i]
+        f_idx = row[0].astype(jnp.int32)
+        output_index = row[-2].astype(jnp.int32)
+        child_indices = row[1:-1].astype(jnp.int32)
+        constant = row[-1]
 
-        value = jax.lax.select(f_idx == 1, constant, jax.lax.switch(f_idx.astype(int), node_function_list, x, y, data))  # Computes value of the node
+        valid_child_mask = child_indices >= 0
+        safe_child_indices = jnp.where(valid_child_mask, child_indices, 0)
 
-        tree = tree.at[i, 4].set(value)  # Store value
-        output_index = output_index.astype(int)
+        child_values = tree[safe_child_indices, -1]
+        inputs = jnp.where(valid_child_mask, child_values, 0.0)
+
+        value = jax.lax.select(f_idx == 1, constant, jax.lax.switch(f_idx.astype(int), node_function_list, inputs, data))  # Computes value of the node
+
         output_array = output_array.at[output_index].set(output_array[output_index] + value)
+        tree = tree.at[i, -1].set(value)  # Store value
 
         return (tree, data, output_array)
 
@@ -856,7 +949,8 @@ class GeneticProgramming:
             Tuple containing updated candidates, states, and data, and the original candidates and loss.
         """
         candidates, states, data = carry
-        loss, gradients = self.vmap_gradients(candidates[..., 4:], candidates[..., :4], data)  # Parallel computation of the loss and gradients
+        # Candidate rows follow [node metadata..., value]; optimize only the value block.
+        loss, gradients = self.vmap_gradients(candidates[..., -1:], candidates[..., :-1], data)
         
         if isinstance(loss, tuple):
             loss = jnp.concatenate([loss[0][:,None], loss[1]], axis=-1)
@@ -872,19 +966,19 @@ class GeneticProgramming:
 
         loss = jnp.minimum(loss, self.max_fitness * jnp.ones_like(loss))
 
-        updates, states = jax.vmap(self.optimizer.update)(gradients, states, candidates[..., 4])  # Parallel computation of the updates
-        new_candidates = candidates.at[..., 4:].set(jax.vmap(lambda t, u: t + u)(candidates[..., 4:], updates))  # Parallel updating of constants
+        updates, states = jax.vmap(self.optimizer.update)(gradients, states, candidates[..., -1:])
+        new_candidates = candidates.at[..., -1:].set(jax.vmap(lambda t, u: t + u)(candidates[..., -1:], updates))
 
         return (new_candidates, states, data), (candidates, loss)
 
     def optimize_constants(self, candidates: Array, data: Tuple, key: PRNGKey, step_size: float, n_epoch: int) -> Tuple[Array, Array]:
         """
-        optimizes the constants in the candidates.
+        Optimizes the selected optimizable slice in candidate rows.
 
         Parameters
         ----------
         candidates : Array
-            Candidate solutions.
+            Candidate solutions stored as [node metadata..., value].
         data : Tuple
             The data required to evaluate the population.
         key : PRNGKey
@@ -898,30 +992,43 @@ class GeneticProgramming:
             Optimized and evaluated candidate.
         """
 
-        states = jax.vmap(self.optimizer.init)(candidates[..., 4:])  # Initialize optimizers for each candidate
+        states = jax.vmap(self.optimizer.init)(candidates[..., -1:])  # Initialize optimizers on the selected parameter slice.
 
-        (last_candidates, _, _), out = jax.lax.scan(self.optimize_constants_epoch, (candidates, states, data), length=n_epoch)
-        last_loss = self.vmap_trees(last_candidates[..., 3:], last_candidates[..., :3], data)
-        if self.n_objectives > 1:
-            # For multi-objective, check if ANY objective is nan/inf for each candidate
-            candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(last_loss)
-            nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+        def _sanitize_loss(_loss: Array) -> Array:
+            if self.n_objectives > 1:
+                # For multi-objective, check if ANY objective is nan/inf for each candidate.
+                candidate_has_invalid = jax.vmap(lambda f: jnp.any(jnp.isinf(f) + jnp.isnan(f)))(_loss)
+                nan_or_inf = candidate_has_invalid[:, None]  # Broadcast to all objectives
+            else:
+                nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(_loss)
+            _loss = jnp.where(nan_or_inf, jnp.ones(_loss.shape) * self.max_fitness, _loss)
+            return jnp.minimum(_loss, self.max_fitness * jnp.ones_like(_loss))
+
+        if n_epoch > 0:
+            (last_candidates, _, _), out = jax.lax.scan(
+                self.optimize_constants_epoch,
+                (candidates, states, data),
+                length=n_epoch,
+            )
+            candidate_history, loss_history = out
         else:
-            nan_or_inf = jax.vmap(lambda f: jnp.isinf(f) + jnp.isnan(f))(last_loss)
-        last_loss = jnp.where(nan_or_inf, jnp.ones(last_loss.shape) * self.max_fitness, last_loss)
+            # No optimization updates requested; still evaluate once for selection consistency.
+            last_candidates = candidates
+            candidate_history = candidates[None]
+            loss_history = _sanitize_loss(self.vmap_trees(candidates[..., -1:], candidates[..., :-1], data))[None]
 
-        new_candidates, loss = out
-
-        loss = jnp.concatenate([loss, last_loss[None]], axis=0)
-        new_candidates = jnp.concatenate([new_candidates, last_candidates[None]], axis=0)
+        # Evaluate final post-update candidates so step N is eligible for selection.
+        last_loss = _sanitize_loss(self.vmap_trees(last_candidates[..., -1:], last_candidates[..., :-1], data))
+        loss_history = jnp.concatenate([loss_history, last_loss[None]], axis=0)
+        candidate_history = jnp.concatenate([candidate_history, last_candidates[None]], axis=0)
 
         if self.n_objectives > 1:
-            best_indices = jnp.argmin(loss[:,:,0], axis=0)
+            best_indices = jnp.argmin(loss_history[:, :, 0], axis=0)
         else:
-            best_indices = jnp.argmin(loss, axis=0)
+            best_indices = jnp.argmin(loss_history, axis=0)
 
-        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss, best_indices)  # Get best fitness during constant optimization
-        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(new_candidates, best_indices)  # Get best candidate during constant optimization
+        fitness = jax.vmap(lambda l, i: l[i], in_axes=[1, 0])(loss_history, best_indices)  # Get best fitness during constant optimization
+        candidates = jax.vmap(lambda t, i: t[i], in_axes=[1, 0])(candidate_history, best_indices)  # Get best candidate during constant optimization
 
         return fitness, candidates
 
@@ -962,8 +1069,8 @@ class GeneticProgramming:
 
         try:
             _fitness = jnp.concatenate([fitness, current_pareto_fitness], axis=0)
-        except:
-            raise("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.")
+        except Exception as exc:
+            raise ValueError("The shape of the fitness does not match with the specified number of objectives. You can set the number of objectives in your fitness function with `num_objectives`.") from exc
 
         _population = jnp.concatenate([population, current_pareto_solutions], axis=0)
 
@@ -972,10 +1079,32 @@ class GeneticProgramming:
 
         # Compute complexity of the current population
         if (self.n_objectives == 1) or self.complexity_objective:
-            complexity = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(_population)[:,None]
+            complexity = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:, :, 0].astype(int)]))(_population)[:,None]
             metrics = jnp.concatenate([_fitness, complexity], axis=-1)
         else:
             metrics = _fitness
+
+        # Pre-prune before O(n^2) non-dominated sorting to keep memory bounded.
+        if metrics.shape[0] > self.pareto_preprune_size:
+            sort_keys = [metrics[:, -obj_idx - 1] for obj_idx in range(metrics.shape[1])]
+            preprune_indices = jnp.lexsort(sort_keys)[:self.pareto_preprune_size]
+            metrics = metrics[preprune_indices]
+            _fitness = _fitness[preprune_indices]
+            _population = _population[preprune_indices]
+
+        # Remove exact duplicate metric rows without jnp.unique by sorting + adjacent compare.
+        sort_keys = [metrics[:, -obj_idx - 1] for obj_idx in range(metrics.shape[1])]
+        sorted_indices = jnp.lexsort(sort_keys)
+        metrics = metrics[sorted_indices]
+        _fitness = _fitness[sorted_indices]
+        _population = _population[sorted_indices]
+
+        if metrics.shape[0] > 1:
+            duplicate_metrics = jnp.all(metrics[1:] == metrics[:-1], axis=1)
+            keep_mask = jnp.concatenate([jnp.array([True]), ~duplicate_metrics], axis=0)
+            metrics = metrics[keep_mask]
+            _fitness = _fitness[keep_mask]
+            _population = _population[keep_mask]
 
         # For each solution i, check if it's dominated by any other solution j
         
@@ -1001,16 +1130,20 @@ class GeneticProgramming:
         # A solution is non-dominated if it's not dominated by any other solution
         non_dominated = ~jnp.any(j_dominates_i, axis=1)
 
-
-        # _pareto_front = jnp.where(non_dominated[:,None,None,None], padded_population, jnp.zeros_like(padded_population))
-        # _pareto_fitness = jnp.where(non_dominated[:,None], padded_fitness, self.max_fitness * jnp.ones_like(padded_fitness))
-
-        # _, unique_indices = jnp.unique(_pareto_front, return_index=True, axis=0)
-
-        # unique_indices = unique_indices[jnp.all(_pareto_fitness[unique_indices] != self.max_fitness, axis=-1)]
-
         _pareto_front = _population[non_dominated]
         _pareto_fitness = _fitness[non_dominated]
+
+        # Hard cap to prevent unbounded front growth in long runs.
+        if _pareto_fitness.shape[0] > self.max_pareto_size:
+            if (self.n_objectives == 1) or self.complexity_objective:
+                complexity = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:, :, 0].astype(int)]))(_pareto_front)[:,None]
+                cap_metrics = jnp.concatenate([_pareto_fitness, complexity], axis=-1)
+            else:
+                cap_metrics = _pareto_fitness
+            cap_sort_keys = [cap_metrics[:, -obj_idx - 1] for obj_idx in range(cap_metrics.shape[1])]
+            cap_indices = jnp.lexsort(cap_sort_keys)[:self.max_pareto_size]
+            _pareto_fitness = _pareto_fitness[cap_indices]
+            _pareto_front = _pareto_front[cap_indices]
 
         if self.n_objectives==1:
             _pareto_fitness = _pareto_fitness[:,0]
@@ -1130,7 +1263,7 @@ class GeneticProgramming:
         pareto_solutions = pareto_solutions[valid_mask]
 
         # Calculate complexities
-        complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
+        complexities = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:,:,0].astype(int)]))(pareto_solutions)
 
         # Sort by complexity first
         sorted_indices = jnp.argsort(complexities)
@@ -1262,7 +1395,7 @@ class GeneticProgramming:
         pareto_fitness = pareto_fitness[valid_mask]
         pareto_solutions = pareto_solutions[valid_mask]
 
-        complexities = jax.vmap(lambda array: jnp.sum(array[:, :, 0] != 0))(pareto_solutions)
+        complexities = jax.vmap(lambda array: jnp.sum(self.operator_flops[array[:, :, 0].astype(int)]))(pareto_solutions)
 
         sorted_indices = jnp.argsort(complexities)
         pareto_fitness = pareto_fitness[sorted_indices]
@@ -1322,28 +1455,31 @@ class GeneticProgramming:
             String representation of tree.
         """
 
-        if tree[-1, 0] == 1:  # constant
-            return str(tree[-1, 4])
-        elif tree[-1, 1] < 0:  # Variable
-            return self.node_to_string[tree[-1, 0].astype(int).item()]
-        elif tree[-1, 2] < 0:  # Operator with one operand
-            substring = self.tree_to_string(tree[:tree[-1, 1].astype(int) + 1])
-            operator_string = self.node_to_string[tree[-1, 0].astype(int).item()]
+        root = tree[-1]
+        root_idx = root[0].astype(int).item()
 
+        if root_idx == 1:  # constant
+            return str(root[-1])
+
+        child_indices = root[1:-1].astype(int)
+        valid_children = child_indices[child_indices >= 0]
+
+        if valid_children.shape[0] == 0:  # variable/leaf
+            return self.node_to_string[root_idx]
+
+        substrings = [self.tree_to_string(tree[:child_idx.astype(int).item() + 1]) for child_idx in valid_children]
+        operator_string = self.node_to_string[root_idx]
+
+        if len(substrings) == 1:
+            substring = substrings[0]
             if operator_string[0].isalpha() or operator_string[0].isdigit():
                 return f"{operator_string}({substring})"
-            else:
-                return f"({substring}){operator_string}"
-            
-        else:  # Operator with two operands
-            substring1 = self.tree_to_string(tree[:tree[-1, 1].astype(int) + 1])
-            substring2 = self.tree_to_string(tree[:tree[-1, 2].astype(int) + 1])
-            operator_string = self.node_to_string[tree[-1, 0].astype(int).item()]
+            return f"({substring}){operator_string}"
 
-            if operator_string in ["+", "-", "*", "/", "**"]:
-                return f"({substring1}){self.node_to_string[tree[-1, 0].astype(int).item()]}({substring2})"
-            else:
-                return f"{operator_string}({substring1}, {substring2})"
+        if operator_string in ["+", "-", "*", "/", "**"]:
+            return operator_string.join([f"({substring})" for substring in substrings])
+
+        return f"{operator_string}({', '.join(substrings)})"
 
     def expression_to_string(self, candidate: Array) -> str:
         """

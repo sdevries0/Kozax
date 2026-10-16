@@ -8,7 +8,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from kozax.environments.control_environments.control_environment_base import EnvironmentBase
 from jaxtyping import Array
 from typing import Tuple
@@ -80,7 +80,7 @@ class HarmonicOscillator(EnvironmentBase):
         self.Q = jnp.array([[self.q, 0], [0, 0]])
         self.R = jnp.array([[self.r]])
 
-    def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Tuple[Array, Array]:
+    def sample_init_states(self, batch_size: int, key: jr.PRNGKey) -> Tuple[Array, Array]:
         """
         Samples initial states for the environment.
 
@@ -98,12 +98,12 @@ class HarmonicOscillator(EnvironmentBase):
         targets : :class:`jax.Array`
             Target states.
         """
-        init_key, target_key = jrandom.split(key)
-        x0 = self.mu0 + jrandom.normal(init_key, shape=(batch_size, self.n_var)) @ self.P0
-        targets = jrandom.uniform(target_key, shape=(batch_size, self.n_targets), minval=-3, maxval=3)
+        init_key, target_key = jr.split(key)
+        x0 = self.mu0 + jr.normal(init_key, shape=(batch_size, self.n_var)) @ self.P0
+        targets = jr.uniform(target_key, shape=(batch_size, self.n_targets), minval=-3, maxval=3)
         return x0, targets
     
-    def sample_params(self, batch_size: int, mode: str, ts: Array, key: jrandom.PRNGKey) -> Tuple[Array, Array]:
+    def sample_params(self, batch_size: int, mode: str, ts: Array, key: jr.PRNGKey) -> Tuple[Array, Array]:
         """
         Samples parameters for the environment.
 
@@ -125,17 +125,17 @@ class HarmonicOscillator(EnvironmentBase):
         zetas : :class:`jax.Array`
             Sampled zeta parameters.
         """
-        omega_key, zeta_key, args_key = jrandom.split(key, 3)
+        omega_key, zeta_key, args_key = jr.split(key, 3)
         if mode == "Constant":
             omegas = jnp.ones((batch_size))
             zetas = jnp.zeros((batch_size))
         elif mode == "Different":
-            omegas = jrandom.uniform(omega_key, shape=(batch_size,), minval=0.0, maxval=2.0)
-            zetas = jrandom.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.5)
+            omegas = jr.uniform(omega_key, shape=(batch_size,), minval=0.0, maxval=2.0)
+            zetas = jr.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.5)
         elif mode == "Changing":
-            decay_factors = jrandom.uniform(args_key, shape=(batch_size, 2), minval=0.98, maxval=1.02)
-            init_omegas = jrandom.uniform(omega_key, shape=(batch_size,), minval=0.5, maxval=1.5)
-            init_zetas = jrandom.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.0)
+            decay_factors = jr.uniform(args_key, shape=(batch_size, 2), minval=0.98, maxval=1.02)
+            init_omegas = jr.uniform(omega_key, shape=(batch_size,), minval=0.5, maxval=1.5)
+            init_zetas = jr.uniform(zeta_key, shape=(batch_size,), minval=0.0, maxval=1.0)
             omegas = jax.vmap(lambda o, d, t: o * (d ** t), in_axes=[0, 0, None])(init_omegas, decay_factors[:, 0], ts)
             zetas = jax.vmap(lambda z, d, t: z * (d ** t), in_axes=[0, 0, None])(init_zetas, decay_factors[:, 1], ts)
         return omegas, zetas

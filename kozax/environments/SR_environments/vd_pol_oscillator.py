@@ -8,7 +8,7 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-NoDer
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from kozax.environments.SR_environments.time_series_environment_base import EnvironmentBase
 from jaxtyping import Array
 from typing import Tuple
@@ -53,7 +53,7 @@ class VanDerPolOscillator(EnvironmentBase):
         self.mu = 1
         self.V = self.process_noise * jnp.eye(self.n_var)
 
-    def sample_init_states(self, batch_size: int, key: jrandom.PRNGKey) -> Array:
+    def sample_init_states(self, batch_size: int, key: jr.PRNGKey) -> Array:
         """
         Samples initial states for the environment.
 
@@ -69,7 +69,7 @@ class VanDerPolOscillator(EnvironmentBase):
         :class:`jax.Array`
             Initial states.
         """
-        return self.init_mu + self.init_sd * jrandom.normal(key, shape=(batch_size, self.n_var))
+        return self.init_mu + self.init_sd * jr.normal(key, shape=(batch_size, self.n_var))
     
     def drift(self, t: float, state: Array, args: float = jnp.array([0.0])) -> Array:
         """
