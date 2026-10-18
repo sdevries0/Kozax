@@ -378,7 +378,6 @@ def evolve_populations(jit_evolve_population: Callable,
                        migration_size: int, 
                        reproduction_type_probabilities: Array, 
                        reproduction_probabilities: Array,
-                       variable_indices,
                        population_indices: Array) -> Array:
     """Evolves each population independently.
 

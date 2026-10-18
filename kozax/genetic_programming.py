@@ -61,6 +61,8 @@ class GeneticProgramming:
         Maximum number of nodes in a tree.
     device_type : str, optional
         Type of device on which the evaluation and evolution takes place.
+    num_outputs_per_tree : int | Array, optional
+        Number of outputs each tree writes to. Provide one value, or one value for each layer (len(layer_sizes)). Results of trees with fewer outputs are zero-padded to the largest number of outputs.
     constant_sd : float, optional
         Standard deviation to sample constants.
     migration_period : int, optional
@@ -105,7 +107,7 @@ class GeneticProgramming:
                  num_populations: int = 1,
                  max_init_depth: int = 4,
                  max_nodes: int = 15,
-                 num_ouputs_per_tree: int = 1,
+                 num_outputs_per_tree: int | Array = 1,
                  device_type: str = 'cpu',
                  complexity_objective: bool = False,
                  constant_sd: float | Array = 1.0,
@@ -140,7 +142,18 @@ class GeneticProgramming:
         assert self.num_trees > 0, "The number of trees should be larger than 0"
         assert tournament_size > 1, "The tournament size should be larger than 1"
         self.tournament_size = jnp.minimum(tournament_size, self.population_size).item()
-        self.num_ouputs = num_ouputs_per_tree
+
+        num_outputs_per_tree = jnp.atleast_1d(jnp.asarray(num_outputs_per_tree)).astype(jnp.int32)
+        assert jnp.all(num_outputs_per_tree > 0), "The number of outputs should be larger than 0"
+        if len(num_outputs_per_tree) == 1:
+            self.num_outputs_array = jnp.full(self.num_trees, num_outputs_per_tree[0])
+        else:
+            assert len(num_outputs_per_tree) == len(self.layer_sizes), "Either select one value for the number of outputs, or provide one value for each type of tree (len(layer_sizes))"
+            self.num_outputs_array = jnp.repeat(num_outputs_per_tree, self.layer_sizes, total_repeat_length=self.num_trees)
+        self.num_outputs = int(jnp.max(self.num_outputs_array))  # Size of the output array of a tree
+        # Output size and tree offset of each layer, used to evaluate a single layer without padding
+        self.layer_num_outputs = [int(n) for n in self.num_outputs_array[jnp.cumsum(self.layer_sizes) - self.layer_sizes]]
+        self.layer_offsets = [int(o) for o in jnp.cumsum(self.layer_sizes) - self.layer_sizes]
 
         self.n_objectives = fitness_function.n_objectives
         self.complexity_objective = complexity_objective
@@ -218,8 +231,8 @@ class GeneticProgramming:
         self.map_b_to_d = self.map_breadth_indices_to_depth_indices(init_depth)
 
         # Define general tree structures
-        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 2 + self.max_arity))
-        self.empty_row = -jnp.ones(2 + self.max_arity).at[0].set(0).at[-1].set(0)
+        self.tree_indices = jnp.tile(jnp.arange(self.max_nodes)[:, None], reps=(1, 3 + self.max_arity))
+        self.empty_row = -jnp.ones(3 + self.max_arity).at[0].set(0).at[-1].set(0).at[-2].set(0)
         self.empty_tree = jnp.tile(self.empty_row, (self.max_nodes, 1))
 
         print(f"Input data should be formatted as: {[self.node_to_string[i.item()] for i in self.variable_indices[1:]]}.")
@@ -236,7 +249,7 @@ class GeneticProgramming:
                                    max_nodes=self.max_nodes, 
                                    tree_size=init_tree_size,
                                    args=self.sample_args,
-                                   num_outputs=self.num_ouputs,
+                                   num_outputs=self.num_outputs,
                                    max_arity = self.max_arity)
         
         self.sample_population = partial(sample_population, 
@@ -244,6 +257,7 @@ class GeneticProgramming:
                                          max_init_depth=self.max_init_depth, 
                                          variable_array=self.variable_array,
                                          constant_sd_array=self.constant_sd_array,
+                                         num_outputs_array=self.num_outputs_array,
                                          sample_function=self.sample_tree)
 
         self.mutate_args = (self.sample_tree, 
@@ -253,16 +267,15 @@ class GeneticProgramming:
                             self.operator_indices, 
                             self.operator_probabilities, 
                             self.slots, 
-                            self.num_ouputs,
-                            self.constant_sd,
+                            self.num_outputs,
                             self.tree_indices)
 
-        self.mutate_trees = initialize_mutation_functions(self.mutate_args)
+        self.mutate_trees = partial(initialize_mutation_functions(self.mutate_args), num_outputs_array=self.num_outputs_array)
 
         self.partial_crossover = partial(crossover_trees, 
                                          operator_indices=self.operator_indices, 
                                          max_nodes=self.max_nodes,
-                                         num_ouputs=self.num_ouputs,
+                                         num_outputs=self.num_outputs_array,
                                          max_arity=self.max_arity, 
                                          tree_indices=self.tree_indices)
 
@@ -560,7 +573,7 @@ class GeneticProgramming:
         self._warm_up_jit_functions(dummy_population, data)
 
         population = dummy_population
-        print("invalid solutions:",  jnp.sum(population[:,:,:,-1,3] == 0), jnp.sum((population[:,:,:,:-1,3] > 0)*jnp.isin(population[:,:,:,:-1,0], self.variable_indices)))
+        print("invalid solutions:",  jnp.sum(population[:,:,:,-1,-2] == 0), jnp.sum((population[:,:,:,:-1,-2] > 0)*jnp.isin(population[:,:,:,:-1,0], self.variable_indices)))
 
         for g in range(self.num_generations):
             key, eval_key, sample_key = jr.split(key, 3)
@@ -577,7 +590,7 @@ class GeneticProgramming:
 
             if g < (self.num_generations-1):
                 population = self.evolve_population(population, fitness, sample_key)
-                print("invalid solutions:",  jnp.sum(population[:,:,:,-1,3] == 0), jnp.sum((population[:,:,:,:-1,3] > 0)*jnp.isin(population[:,:,:,:-1,0], self.variable_indices)))
+                print("invalid solutions:",  jnp.sum(population[:,:,:,-1,-2] == 0), jnp.sum((population[:,:,:,:-1,-2] > 0)*jnp.isin(population[:,:,:,:-1,0], self.variable_indices)))
 
         print("Final pareto front:")
         self.print_pareto_front(save_pareto_front, path_to_file)
@@ -591,9 +604,9 @@ class GeneticProgramming:
 
         # The Pareto front keeps track of the best solutions at each complexity level
         if self.n_objectives==1:
-            self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, self.max_arity+2)))    
+            self.pareto_front = (jnp.array([self.max_fitness]), jnp.ones((1, self.num_trees, self.max_nodes, self.max_arity+3)))    
         else:
-            self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, self.max_arity+2)))        
+            self.pareto_front = (self.max_fitness * jnp.ones((1, self.n_objectives)), jnp.ones((1, self.num_trees, self.max_nodes, self.max_arity+3)))        
 
     def initialize_population(self, key: PRNGKey) -> Array:
         """
@@ -697,7 +710,7 @@ class GeneticProgramming:
         Tuple[Array, Array]
             Pair of candidates.
         """
-        offspring = jax.vmap(lambda _keys: jax.vmap(self.sample_tree, in_axes=[0, None, 0, None])(_keys, self.max_init_depth, self.variable_array, True, self.constant_sd_array), in_axes=[1])(keys)
+        offspring = jax.vmap(lambda _keys: jax.vmap(lambda k, v, c, n: self.sample_tree(k, self.max_init_depth, v, True, c, num_outputs=n))(_keys, self.variable_array, self.constant_sd_array, self.num_outputs_array), in_axes=[1])(keys)
         return offspring[0], offspring[1]
 
     def compact_tree_rows(self, tree: Array) -> Array:
@@ -715,12 +728,12 @@ class GeneticProgramming:
 
         compact_tree = self.empty_tree.at[new_idx].set(tree)
 
-        refs = compact_tree[:, 1:-1].astype(jnp.int32)
+        refs = compact_tree[:, 1:-2].astype(jnp.int32)
         valid_ref = (refs >= 0) & (refs < self.max_nodes)
         safe_refs = jnp.where(valid_ref, refs, 0)
         remapped_refs = jnp.where(valid_ref, old_to_new[safe_refs], -1)
         remapped_refs = jnp.where(compact_tree[:, 0:1] == 0, -1, remapped_refs)
-        return compact_tree.at[:, 1:-1].set(remapped_refs)
+        return compact_tree.at[:, 1:-2].set(remapped_refs)
 
     def simplify_constants_in_row(self, i: int, carry: Tuple[Array, Array]) -> Tuple[Array, Array]:
         """
@@ -757,7 +770,7 @@ class GeneticProgramming:
 
         inputs = jnp.where(valid_child_mask, child_rows[:, -1], 0.0)
         folded_value = jax.lax.switch(f_idx.astype(int), self.node_function_list, inputs, jnp.zeros(1))
-        folded_row = row.at[0].set(1.0).at[1:-1].set(-1.0).at[-1].set(folded_value).set(-1.0).at[-2].set(output_index)
+        folded_row = row.at[0].set(1.0).at[1:-2].set(-1.0).at[-1].set(folded_value).at[-2].set(output_index)
 
         def fold_subtree(t: Array) -> Array:
             t = t.at[i].set(folded_row)
@@ -812,7 +825,7 @@ class GeneticProgramming:
         row = tree[i]
         f_idx = row[0].astype(jnp.int32)
         output_index = row[-2].astype(jnp.int32)
-        child_indices = row[1:-1].astype(jnp.int32)
+        child_indices = row[1:-2].astype(jnp.int32)
         constant = row[-1]
 
         valid_child_mask = child_indices >= 0
@@ -828,7 +841,7 @@ class GeneticProgramming:
 
         return (tree, data, output_array)
 
-    def iterate_through_tree(self, tree: Array, data: Array) -> Array:
+    def iterate_through_tree(self, tree: Array, data: Array, num_outputs: int | None = None) -> Array:
         """
         Loops through a tree to compute the value of each node bottom up.
 
@@ -838,17 +851,19 @@ class GeneticProgramming:
             Tree to be evaluated.
         data : Array
             Data for evaluation.
+        num_outputs : int, optional
+            Number of outputs to return. Defaults to the largest number of outputs of any tree (zero-padded).
 
         Returns
         -------
         Array
             Value of the root node.
         """
-        
-        x, _, result = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data, jnp.zeros(self.num_ouputs+1))) #Iterate over the tree to compute the value of each node
-        return jnp.squeeze(result[1:])
+        num_outputs = self.num_outputs if num_outputs is None else num_outputs
+        x, _, result = jax.lax.fori_loop(0, self.max_nodes, self.jit_evaluate_row_from_tree, (tree, data, jnp.zeros(self.num_outputs+1))) #Iterate over the tree to compute the value of each node
+        return jnp.squeeze(result[1:num_outputs + 1])
 
-    def tree_evaluator(self, candidate: Array, data: Array) -> Array:
+    def tree_evaluator(self, candidate: Array, data: Array, layer: int | None = None) -> Array:
         """
         Calls the evaluation function for each tree in a candidate.
 
@@ -858,14 +873,20 @@ class GeneticProgramming:
             Candidate to be evaluated.
         data : Array
             Data for evaluation.
+        layer : int, optional
+            Index of a layer to evaluate. The candidate can either be the full candidate or only the trees of that layer.
+            The result then has exactly the number of outputs of that layer, without padding. If not provided, all trees
+            are evaluated and the results are zero-padded to the largest number of outputs.
 
         Returns
         -------
         Array
             Result of each tree.
         """
-        result = jax.vmap(self.iterate_through_tree, in_axes=[0, None])(candidate, data) #Evaluate each tree in the candidate
-        return result
+        if layer is None:
+            return jax.vmap(self.iterate_through_tree, in_axes=[0, None])(candidate, data) #Evaluate each tree in the candidate
+
+        return jax.vmap(partial(self.iterate_through_tree, num_outputs=self.layer_num_outputs[layer]), in_axes=[0, None])(candidate, data)
 
     def evaluate_population(self, populations: Array, data: Tuple, key: PRNGKey) -> Tuple[Array, Array]:
         """
@@ -1440,7 +1461,48 @@ class GeneticProgramming:
         if save:
             np.savetxt(f'{path_to_file}/pareto_front.csv', pareto_table, delimiter=',', fmt='%s')
     
-    def tree_to_string(self, tree: Array) -> str:
+    # def tree_to_string(self, tree: Array) -> str:
+    #     """
+    #     Maps tree to string.
+
+    #     Parameters
+    #     ----------
+    #     tree : Array
+    #         Tree to be converted to string.
+
+    #     Returns
+    #     -------
+    #     str
+    #         String representation of tree.
+    #     """
+
+    #     root = tree[-1]
+    #     root_idx = root[0].astype(int).item()
+
+    #     if root_idx == 1:  # constant
+    #         return str(root[-1])
+
+    #     child_indices = root[1:-2].astype(int)
+    #     valid_children = child_indices[child_indices >= 0]
+
+    #     if valid_children.shape[0] == 0:  # variable/leaf
+    #         return self.node_to_string[root_idx]
+
+    #     substrings = [self.tree_to_string(tree[:child_idx.astype(int).item() + 1]) for child_idx in valid_children]
+    #     operator_string = self.node_to_string[root_idx]
+
+    #     if len(substrings) == 1:
+    #         substring = substrings[0]
+    #         if operator_string[0].isalpha() or operator_string[0].isdigit():
+    #             return f"{operator_string}({substring})"
+    #         return f"({substring}){operator_string}"
+
+    #     if operator_string in ["+", "-", "*", "/", "**"]:
+    #         return operator_string.join([f"({substring})" for substring in substrings])
+
+    #     return f"{operator_string}({', '.join(substrings)})"
+
+    def tree_to_string_modi(self, candidate: Array, num_outputs: int) -> str:
         """
         Maps tree to string.
 
@@ -1448,38 +1510,61 @@ class GeneticProgramming:
         ----------
         tree : Array
             Tree to be converted to string.
+        num_outputs : int
+            Number of outputs of the tree.
 
         Returns
         -------
         str
             String representation of tree.
         """
+        outputs = ["0"] * num_outputs
 
-        root = tree[-1]
-        root_idx = root[0].astype(int).item()
+        def tree_to_string(tree):
 
-        if root_idx == 1:  # constant
-            return str(root[-1])
+            root = tree[-1]
+            root_idx = root[0].astype(int).item()
 
-        child_indices = root[1:-1].astype(int)
-        valid_children = child_indices[child_indices >= 0]
+            if root_idx == 1:  # constant
+                expr =  str(root[-1])
+            else:
+                child_indices = root[1:-2].astype(int)
+                valid_children = child_indices[child_indices >= 0]
 
-        if valid_children.shape[0] == 0:  # variable/leaf
-            return self.node_to_string[root_idx]
+                if valid_children.shape[0] == 0:  # variable/leaf
+                    expr = self.node_to_string[root_idx]
+                else:
+                    substrings = [tree_to_string(tree[:child_idx.astype(int).item() + 1]) for child_idx in valid_children]
+                    operator_string = self.node_to_string[root_idx]
 
-        substrings = [self.tree_to_string(tree[:child_idx.astype(int).item() + 1]) for child_idx in valid_children]
-        operator_string = self.node_to_string[root_idx]
+                    if len(substrings) == 1:
+                        substring = substrings[0]
+                        if operator_string[0].isalpha() or operator_string[0].isdigit():
+                            expr =  f"{operator_string}({substring})"
+                        else:
+                            expr =  f"({substring}){operator_string}"
 
-        if len(substrings) == 1:
-            substring = substrings[0]
-            if operator_string[0].isalpha() or operator_string[0].isdigit():
-                return f"{operator_string}({substring})"
-            return f"({substring}){operator_string}"
+                    elif operator_string in ["+", "-", "*", "/", "**"]:
+                        expr =  operator_string.join([f"({substring})" for substring in substrings])
 
-        if operator_string in ["+", "-", "*", "/", "**"]:
-            return operator_string.join([f"({substring})" for substring in substrings])
+                    else:
+                        expr = operator_string + "("
+                        for substring in substrings[:-1]:
+                            expr +=  substring + ", "
+                        expr += substrings[1] + ")"
 
-        return f"{operator_string}({', '.join(substrings)})"
+            output_idx = int(tree[-1, -2]) - 1
+            if output_idx >= 0:
+                if outputs[output_idx] == "0":
+                    outputs[output_idx] = expr
+                else:
+                    outputs[output_idx] += " + " + expr
+
+            return expr
+
+        tree_to_string(candidate)
+        
+        return outputs
 
     def expression_to_string(self, candidate: Array) -> str:
         """
@@ -1496,26 +1581,33 @@ class GeneticProgramming:
             String representation of candidate.
         """
         if self.num_trees == 1:
-            simplified_expression = sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(candidate[0]))
+            string_outputs = self.tree_to_string_modi(candidate[0], int(self.num_outputs_array[0]))
+            for i, string in enumerate(string_outputs):
+                simplified_expression = sympy.parsing.sympy_parser.parse_expr(string)
 
-            rounded_expression = simplified_expression
+                rounded_expression = simplified_expression
 
-            for a in sympy.preorder_traversal(simplified_expression):
-                if isinstance(a, sympy.Float):
-                    rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
+                for a in sympy.preorder_traversal(simplified_expression):
+                    if isinstance(a, sympy.Float):
+                        rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
 
-            return rounded_expression
+                string_outputs[i] = rounded_expression
 
-        string_output = []
-        for tree in candidate:
-            simplified_expression = sympy.parsing.sympy_parser.parse_expr(self.tree_to_string(tree))
+            return string_outputs
 
-            rounded_expression = simplified_expression
+        full_string_output = []
+        for tree, num_outputs in zip(candidate, self.num_outputs_array):
+            string_outputs = self.tree_to_string_modi(tree, int(num_outputs))
+            for i, string in enumerate(string_outputs):
+                simplified_expression = sympy.parsing.sympy_parser.parse_expr(string)
 
-            for a in sympy.preorder_traversal(simplified_expression):
-                if isinstance(a, sympy.Float):
-                    rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
+                rounded_expression = simplified_expression
 
-            string_output.append(rounded_expression)
+                for a in sympy.preorder_traversal(simplified_expression):
+                    if isinstance(a, sympy.Float):
+                        rounded_expression = rounded_expression.subs(a, sympy.Float(a, 3))
 
-        return string_output
+                string_outputs[i] = rounded_expression
+            full_string_output.append(string_outputs)
+
+        return full_string_output

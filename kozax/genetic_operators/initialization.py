@@ -64,7 +64,7 @@ def sample_node(i: int,
     valid_child = (child_cols < arity) & (child_breadth_indices < map_b_to_d.shape[0])
     safe_child_indices = jnp.minimum(child_breadth_indices, map_b_to_d.shape[0] - 1)
     child_depth_indices = jnp.where(valid_child, map_b_to_d[safe_child_indices], -1)
-    tree = tree.at[_i, 1:-1].set(child_depth_indices)
+    tree = tree.at[_i, 1:-2].set(child_depth_indices)
 
     tree = jax.lax.select(index == 1, tree.at[_i, -1].set(coefficient), tree)  # Set coefficient value
     tree = tree.at[_i, 0].set(index)
@@ -97,12 +97,13 @@ def prune_row(i: int,
     row = old_tree[_i]
 
     # If node is not empty, add node and update index references
-    tree = jax.lax.select(row[0] != 0, tree.at[counter].set(row), tree.at[:, 1:-1].set(jnp.where(tree[:, 1:-1] > _i, tree[:, 1:-1] - 1, tree[:, 1:-1])))
+    tree = jax.lax.select(row[0] != 0, tree.at[counter].set(row), tree.at[:, 1:-2].set(jnp.where(tree[:, 1:-2] > _i, tree[:, 1:-2] - 1, tree[:, 1:-2])))
     counter = jax.lax.select(row[0] != 0, counter - 1, counter)
 
     return (tree, counter, tree_size)
     
 def prune_tree(tree: Array, 
+               empty_tree: Array,
                tree_size: int, 
                max_nodes: int) -> Array:
     """Removes empty nodes from a tree. The new tree is filled with empty nodes at the end to match the max number of nodes.
@@ -121,11 +122,10 @@ def prune_tree(tree: Array,
     Array
         Tree with empty nodes pruned.
     """
-    tree, counter, _ = jax.lax.fori_loop(0, tree_size, partial(prune_row, old_tree=tree), (jnp.tile(jnp.array([0.0, -1.0, -1.0, 0.0, 0.0]), (max_nodes, 1)), max_nodes - 1, tree_size))
-    empty_row = -jnp.ones(tree.shape[-1]).at[0].set(0).at[-1].set(0)
-    tree, counter, _ = jax.lax.fori_loop(0, tree_size, partial(prune_row, old_tree=tree), (jnp.tile(empty_row, (max_nodes, 1)), max_nodes - 1, tree_size))
-    tree = tree.at[:, 1:-2].set(jnp.where(tree[:, 1:-1] > -1, tree[:, 1:-1] + counter + 1, tree[:, 1:-1]))  # Update index references after pruning
-    return tree
+    # Prune empty rows in tree
+    _tree, counter, _ = jax.lax.fori_loop(0, tree_size, partial(prune_row, old_tree=tree), (empty_tree, max_nodes - 1, tree_size))
+    pruned_tree = _tree.at[:, 1:-2].set(jnp.where(_tree[:, 1:-2] > -1, _tree[:, 1:-2] + counter + 1, _tree[:, 1:-2]))  # Update index references after pruning
+    return pruned_tree
 
 def sample_tree(key: PRNGKey, 
                 depth: int, 
@@ -161,7 +161,7 @@ def sample_tree(key: PRNGKey,
     """
     # First sample tree at full size given depth
     sample_key, output_key = jr.split(key)
-    empty_row = -jnp.ones(3 + max_arity).at[0].set(0.0).at[-1].set(0.0)
+    empty_row = -jnp.ones(3 + max_arity).at[0].set(0.0).at[-1].set(0.0).at[-2].set(0.0)
 
     tree = jax.lax.fori_loop(
         0,
@@ -182,7 +182,8 @@ def sample_tree(key: PRNGKey,
     tree = jnp.where(is_constant, const_old_tree, tree)
 
     # Prune empty rows in tree
-    pruned_tree = prune_tree(tree, tree_size, max_nodes)
+    pruned_tree = prune_tree(tree, jnp.tile(empty_row, (max_nodes, 1)), tree_size, max_nodes)
+    
     operator_indices = args[1]
     is_operator = jnp.isin(pruned_tree[:,0], operator_indices)
     key1, key2 = jr.split(output_key)
@@ -201,6 +202,7 @@ def sample_population(key: PRNGKey,
                       max_init_depth: int, 
                       variable_array: Array,
                       constant_sd_array: Array,
+                      num_outputs_array: Array,
                       sample_function: Callable) -> Array:
     """Initializes a population of candidates.
 
@@ -216,6 +218,10 @@ def sample_population(key: PRNGKey,
         Max depth in a tree at initialization.
     variable_array : Array
         The valid variables for each tree.
+    constant_sd_array : Array
+        Standard deviation to sample constants for each tree.
+    num_outputs_array : Array
+        Number of outputs of each tree.
     sample_function : Callable
         Function to sample a tree.
 
@@ -224,5 +230,5 @@ def sample_population(key: PRNGKey,
     Array
         Population of candidates.
     """
-    sample_candidate = lambda keys: jax.vmap(sample_function, in_axes=[0, None, 0, None])(keys, max_init_depth, variable_array, True, constant_sd_array)
+    sample_candidate = lambda keys: jax.vmap(lambda k, v, c, n: sample_function(k, max_init_depth, v, True, c, num_outputs=n))(keys, variable_array, constant_sd_array, num_outputs_array)
     return jax.vmap(sample_candidate)(jr.split(key, (population_size, num_trees)))

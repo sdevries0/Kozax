@@ -129,7 +129,7 @@ def test_fit_smoke_runs_end_to_end():
     strategy.fit(fit_key, _toy_data(10), verbose=0)
 
     pareto_fitness, pareto_solutions = strategy.pareto_front
-    assert pareto_solutions.shape[1:] == (1, strategy.max_nodes, 4)
+    assert pareto_solutions.shape[1:] == (1, strategy.max_nodes, 5)
     assert jnp.all(jnp.isfinite(pareto_fitness))
 
 
@@ -264,7 +264,7 @@ def test_higher_arity_operators_initialize_evaluate_evolve_and_structure():
     )
 
     population = strategy.initialize_population(init_key)
-    assert population.shape[-1] == 2 + strategy.max_arity
+    assert population.shape[-1] == 3 + strategy.max_arity
 
     fitness_values, evaluated_population = strategy.evaluate_population(population, _toy_data(12), eval_key)
     assert fitness_values.shape == (1, 8, 1)
@@ -279,7 +279,7 @@ def test_higher_arity_operators_initialize_evaluate_evolve_and_structure():
     assert not bool(jnp.any(internal_empty))
 
     # Child references must point to non-empty rows.
-    refs = offspring[..., 1:-1].astype(jnp.int32)
+    refs = offspring[..., 1:-2].astype(jnp.int32)
     has_ref = refs >= 0
     safe_refs = jnp.where(has_ref, refs, 0)
     ref_fidx = jax.vmap(lambda ind: jnp.take_along_axis(offspring[..., 0], ind, axis=-1), in_axes=[-1], out_axes=-1)(safe_refs)
@@ -325,3 +325,57 @@ def test_mutate_trees_jit_and_invariants_hold():
 
     for i in range(mutated.shape[0]):
         _assert_tree_reference_invariants(mutated[i])
+
+class PerLayerOutputsFitness:
+    def __init__(self):
+        self.n_objectives = 1
+
+    def __call__(self, candidate, data, tree_evaluator):
+        x, y = data
+        pred = jax.vmap(lambda row: jnp.sum(tree_evaluator(candidate, row)))(x)
+        return jnp.mean((pred - y) ** 2)
+
+
+def test_num_outputs_can_differ_per_layer():
+    operator_list = [{"string": "+", "fn": lambda x, y: jnp.add(x, y), "arity": 2, "prob": 0.1},
+                     {"string": "*", "fn": lambda x, y: jnp.multiply(x, y), "arity": 2, "prob": 0.1}]
+    strategy = GeneticProgramming(
+        num_generations=2,
+        population_size=40,
+        fitness_function=PerLayerOutputsFitness(),
+        operator_list=operator_list,
+        variable_list=[["x0", "x1"], ["x0", "x1"]],
+        layer_sizes=jnp.array([1, 1]),
+        num_outputs_per_tree=jnp.array([1, 3]),
+        max_init_depth=3,
+        max_nodes=15,
+        max_fitness=1e6,
+    )
+    assert strategy.num_outputs_array.tolist() == [1, 3]
+
+    key = jr.PRNGKey(11)
+    init_key, eval_key, evolve_key = jr.split(key, 3)
+    data = _toy_data(n=8)
+    population = strategy.initialize_population(init_key)
+
+    for _ in range(3):
+        fitness_values, population = strategy.evaluate_population(population, data, eval_key)
+        assert jnp.all(jnp.isfinite(fitness_values))
+        population = strategy.evolve_population(population, fitness_values, evolve_key)
+        evolve_key, eval_key = jr.split(evolve_key)
+
+        outputs = population[..., -2]
+        assert jnp.all(outputs[:, :, 0] <= 1)
+        assert jnp.all(outputs[:, :, 1] <= 3)
+        assert jnp.all(outputs[..., -1] >= 1)  # the root of every tree writes to an output
+
+    assert jnp.any(outputs[:, :, 1] > 1)
+
+    candidate = population[0, 0]
+    x = jnp.array([0.5, -0.5])
+    assert strategy.tree_evaluator(candidate, x).shape == (2, 3)  # zero-padded
+    assert strategy.tree_evaluator(candidate[:1], x, layer=0).shape == (1,)
+    assert strategy.tree_evaluator(candidate[1:], x, layer=1).shape == (1, 3)
+    assert strategy.tree_evaluator(candidate[1:], x, layer=1).shape == (1, 3)
+    assert len(strategy.expression_to_string(candidate)[0]) == 1
+    assert len(strategy.expression_to_string(candidate)[1]) == 3
